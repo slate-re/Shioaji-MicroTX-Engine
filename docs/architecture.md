@@ -134,6 +134,7 @@ class OrderRequest:
     time_in_force: TimeInForce # ROD / IOC / FOK
     intent: OrderIntent        # ENTRY / TAKE_PROFIT / STOP_LOSS / FORCE_CLOSE / EMERGENCY
     client_id: str             # 冪等鍵，UUID4；重送同 client_id 不得重複成交
+    strategy_id: str = ""      # 發起此委託的策略；"" 表示非策略發起（緊急平倉、手動）
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,11 +249,22 @@ class RiskDecision:
     reason: str          # 被拒時必須說明原因，會寫入日誌
 
 class RiskManager:
-    def check(self, request: OrderRequest, context: RiskContext) -> RiskDecision: ...
-    def on_fill(self, fill: FillEvent) -> None: ...
-    def should_halt(self) -> bool: ...
-    def reset_daily(self) -> None: ...
+    """純決策函式：不持有任何可變狀態。"""
+
+    def __init__(self, settings: Settings) -> None: ...
+    def check(self, request: OrderRequest, ctx: RiskContext) -> RiskDecision: ...
+    def should_halt(self, ctx: RiskContext) -> tuple[bool, str]: ...
 ```
+
+> **設計變更（取代先前版本）**：`RiskManager` 不再持有 `on_fill()` 與 `reset_daily()`。
+>
+> 先前的版本讓 `RiskManager` 自行累計損益與交易次數，等於與 `PositionTracker`
+> 各記一本帳 —— 兩本帳一旦漂移，風控就會依據錯誤數字做判斷，
+> 而漂移通常只在出事時才被發現。
+>
+> 改為：**所有可變狀態集中在 `PositionTracker`（損益、次數）與 `OrderRouter`
+> （上次下單時間），`RiskManager` 只是一個 `(request, ctx) -> decision` 的純函式。**
+> 好處是單一真相來源、零鎖需求，且測試不必安排狀態序列，直接構造 ctx 即可。
 
 ---
 

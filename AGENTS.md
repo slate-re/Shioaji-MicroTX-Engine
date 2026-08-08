@@ -13,6 +13,10 @@
 ## 1. 資料來源優先序
 
 1. `docs/architecture.md` —— 分層職責與**介面契約**（型別簽章以此為準）
+
+> ⚠️ 若 `architecture.md` 與任務單的簽章**互相衝突**，
+> **不要自行挑一個**（即使有優先序規則）。停下來回報，由架構師裁決並同步兩份文件。
+> 衝突代表其中一份已經過時，猜錯會讓錯誤擴散到下游模組。
 2. `docs/specs/NN-*.md` —— 當前任務的實作規格與驗收條件
 3. `docs/shioaji_guide.md` —— Shioaji API 用法（**已在地化，不要上網查官方文件**）
 4. 既有程式碼 `src/microtx/{config,contracts,enums}.py` —— 已完成，是型別基礎

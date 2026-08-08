@@ -51,6 +51,7 @@ class OrderRequest:
     time_in_force: TimeInForce
     intent: OrderIntent
     client_id: str
+    strategy_id: str = ""
 
     def __post_init__(self) -> None:
         """驗證委託數量與限價委託價格。"""
