@@ -116,6 +116,20 @@ class OrderRouter:
 要點：
 
 - **冪等**：`client_id` 已在 `in_flight` 或已完成 → 直接回 `accepted=False`，不重送
+- **送出場單前，必須先撤掉同一策略所有未成交的進場委託。**
+
+  ```python
+  if request.intent in _CLOSE_ONLY_INTENTS:
+      self._cancel_working_entries(strategy_id)   # 先刪單
+      ...                                          # 再送出場單
+  ```
+
+  理由：策略在部分成交時可能仍持有未成交的進場委託。若出場單先成交、
+  殘留的進場單隨後才成交，部位會從「已平倉」變成「反向持倉」——
+  與 `06-emergency-close.md` 的「先刪單再平倉」是同一條原則，
+  只是這裡的粒度是單一策略，那裡是全帳戶。
+
+  把撤單責任放在引擎層而非策略層，是為了讓 `strategies/` 維持純邏輯、零 I/O。
 - 下單前呼叫 `risk.check()`；被拒時寫 WARNING 日誌（含拒絕原因）並回 `accepted=False`
 - 用 `@retry(attempts=3, exceptions=(BrokerError,))` 包裝實際的 gateway 呼叫
 - 所有下單/刪單操作持有 `lock`，確保與緊急平倉互斥
