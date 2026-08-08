@@ -99,6 +99,16 @@ class CloseMode(str, Enum):
     """平倉後維持停機。"""
 
 
+class EventOrder(str, Enum):
+    """立即成交時的回報送出順序。"""
+
+    FILL_FIRST = "FILL_FIRST"
+    """成交回報先於委託回報，為本專案預設值。"""
+
+    ACK_FIRST = "ACK_FIRST"
+    """委託回報先於成交回報。"""
+
+
 class StrategyState(str, Enum):
     """單一策略實例的生命週期狀態機。
 

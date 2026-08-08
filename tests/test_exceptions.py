@@ -14,6 +14,7 @@ from microtx.broker.base import (
     FillEvent,
     OrderEvent,
     OrderRequest,
+    Position,
     RejectEvent,
     new_client_id,
 )
@@ -125,6 +126,12 @@ class TestBrokerContracts:
         assert len(first) == 16
         assert int(first, 16) >= 0
         assert first != second
+
+    @pytest.mark.parametrize("quantity", [0, -1])
+    def test_position_quantity_must_be_positive(self, quantity: int) -> None:
+        """部位口數恆為正數，空單方向不得以負口數重複表示。"""
+        with pytest.raises(ValueError, match="部位數量必須大於 0"):
+            Position("TMFF6", Direction.SHORT, quantity, 23_000.0, 0.0)
 
     def test_order_quantity_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="數量必須大於 0"):

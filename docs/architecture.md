@@ -91,6 +91,18 @@
 3. 策略邏輯集中在**單一** worker thread，因此策略內部**不需要鎖**，大幅降低複雜度。
 4. `EmergencyWorker` 是唯一允許繞過 worker 直接呼叫 broker 的路徑，
    它與 `OrderRouter` 共用一把 `threading.RLock` 以避免同時送單。
+5. **Gateway 實作禁止在持有自身鎖的狀態下呼叫使用者 callback。**
+   一律「鎖內收集事件、鎖外送出」。
+
+   否則會與規則 4 的共用鎖形成 AB-BA 死鎖：
+
+   ```
+   A（緊急平倉）：持 router-lock → place_order → 等 gateway-lock
+   B（EventWorker）：持 gateway-lock（callback 中）→ 等 router-lock
+   ```
+
+   卡死的時機正好是緊急平倉當下。`ShioajiGateway` 天生符合（SDK 由獨立執行緒送
+   callback），`PaperGateway` 必須刻意做到一致，否則測試替身的執行緒模型是假的。
 
 ---
 

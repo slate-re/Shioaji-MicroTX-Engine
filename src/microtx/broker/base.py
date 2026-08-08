@@ -22,13 +22,21 @@ def new_client_id() -> str:
 
 @dataclass(frozen=True, slots=True)
 class Position:
-    """券商回報的實際部位。"""
+    """券商回報的實際部位。
+
+    ``quantity`` 恆為正數，持倉方向只由 ``direction`` 表示。
+    """
 
     code: str
     direction: Direction
     quantity: int
     average_price: float
     unrealized_pnl: float
+
+    def __post_init__(self) -> None:
+        """驗證部位口數使用正數表示。"""
+        if self.quantity <= 0:
+            raise ValueError("部位數量必須大於 0")
 
 
 @dataclass(frozen=True, slots=True)
