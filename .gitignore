@@ -1,0 +1,120 @@
+# ==========================================================
+#  Shioaji-MicroTX-Engine  .gitignore
+#  ⚠️ 最高優先：任何金鑰、憑證、日誌、成交紀錄一律不進版控
+# ==========================================================
+
+# ---------- 機密：環境變數 ----------
+.env
+.env.*
+!.env.example
+*.env
+env.sh
+secrets.*
+config.local.*
+
+# ---------- 機密：永豐金憑證 ----------
+*.pfx
+*.p12
+*.pem
+*.key
+*.crt
+*.cer
+*.jks
+*.keystore
+certs/
+cert/
+ca/
+
+# ---------- 執行期狀態（PID 檔、狀態快照） ----------
+runtime/
+*.pid
+
+# ---------- 日誌與交易紀錄 ----------
+*.log
+*.log.*
+logs/
+log/
+data/
+records/
+trades/
+*.csv
+*.db
+*.sqlite
+*.sqlite3
+!tests/fixtures/*.csv
+
+# ---------- Shioaji 快取 ----------
+.shioaji/
+shioaji.log
+contracts.pkl
+*.pkl
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---------- 虛擬環境 ----------
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# ---------- 測試 / 型別 / 覆蓋率 ----------
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.hypothesis/
+
+# ---------- IDE ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# ---------- macOS ----------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ---------- Jupyter ----------
+.ipynb_checkpoints/
+*.ipynb
+
+# ---------- 其他 ----------
+*.bak
+*.tmp
+tmp/
+scratch/
