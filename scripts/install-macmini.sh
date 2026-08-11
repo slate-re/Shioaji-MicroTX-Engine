@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(dirname "$SCRIPT_DIR")
 PYTHON_BIN=${PYTHON_BIN:-python3}
 VENV_DIR="$PROJECT_DIR/.venv"
@@ -17,7 +17,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 if [ ! -x "$VENV_DIR/bin/microtx" ]; then
-  "$VENV_DIR/bin/python" -m pip install -e "$PROJECT_DIR[live]"
+  "$VENV_DIR/bin/python" -m pip install -e "${PROJECT_DIR}[live]"
 fi
 
 if [ ! -f "$PROJECT_DIR/.env" ]; then

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(dirname "$SCRIPT_DIR")
 PID_FILE=${MICROTX_PID_FILE:-"$PROJECT_DIR/runtime/microtx.pid"}
 STATUS_FILE=${MICROTX_STATUS_FILE:-"$PROJECT_DIR/runtime/status.json"}
