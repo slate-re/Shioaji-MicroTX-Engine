@@ -161,6 +161,27 @@ def test_start_and_stop_manage_all_resources(mocker, tmp_path: Path) -> None:
     assert not (tmp_path / "engine.pid").exists()
 
 
+def test_stop_writes_final_stopped_status(mocker, tmp_path: Path) -> None:
+    status_file = tmp_path / "status.json"
+    gateway = PaperGateway(spec=TMF)
+    engine = TradingEngine(
+        Settings(
+            _env_file=None,
+            pid_file=tmp_path / "engine.pid",
+            status_file=status_file,
+            flatten_on_shutdown=False,
+        ),
+        gateway,
+    )
+    mocker.patch.object(engine, "_install_signal_handlers")
+    engine.start()
+    engine.stop()
+
+    import json
+
+    assert json.loads(status_file.read_text(encoding="utf-8"))["engine_state"] == "STOPPED"
+
+
 def test_shutdown_with_flatten_calls_emergency_closer(mocker, tmp_path: Path) -> None:
     gateway = PaperGateway(spec=TMF)
     engine = TradingEngine(Settings(pid_file=tmp_path / "engine.pid"), gateway)

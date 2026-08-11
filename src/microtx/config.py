@@ -125,6 +125,8 @@ class Settings(BaseSettings):
     emergency_lock_timeout_sec: float = Field(default=2.0, ge=0.1, le=30.0)
     flatten_on_shutdown: bool = Field(default=True)
     pid_file: Path = Field(default=Path("runtime/microtx.pid"))
+    status_file: Path = Field(default=Path("runtime/status.json"))
+    status_write_interval_sec: float = Field(default=5.0, ge=1.0, le=60.0)
 
     # ------------------------------------------------------------------
     #  7. 日誌

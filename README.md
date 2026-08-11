@@ -1,5 +1,7 @@
 # Shioaji-MicroTX-Engine
 
+[![CI](https://github.com/jam/Shioaji-MicroTX-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/jam/Shioaji-MicroTX-Engine/actions/workflows/ci.yml)
+
 > 台指期（微台 TMF / 小台 MXF / 大台 TXF）**當沖自動條件單引擎**
 > 基於永豐金證券 [Shioaji API](https://sinotrade.github.io/zh/)，以 Python 實作。
 

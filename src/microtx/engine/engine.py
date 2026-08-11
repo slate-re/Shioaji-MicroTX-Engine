@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import signal
 from collections.abc import Callable
@@ -23,6 +24,7 @@ from microtx.engine.order_router import OrderRouter
 from microtx.engine.position import PositionTracker
 from microtx.engine.risk import RiskContext, RiskManager
 from microtx.engine.scheduler import Scheduler
+from microtx.engine.status import StatusSnapshot, StatusWriter, snapshot_time
 from microtx.enums import (
     CloseMode,
     EngineState,
@@ -77,6 +79,13 @@ class TradingEngine:
             on_cancel_strategies=self._cancel_strategies,
             is_tradable=self._scheduler.is_tradable,
         )
+        self._status_writer = StatusWriter(
+            settings.status_file,
+            interval_sec=settings.status_write_interval_sec,
+            lock=self._shared_lock,
+            full_snapshot=self._full_status_snapshot,
+            degraded_snapshot=self._degraded_status_snapshot,
+        )
 
     @property
     def state(self) -> EngineState:
@@ -119,6 +128,7 @@ class TradingEngine:
             for thread in self._threads:
                 thread.start()
             self._set_state(EngineState.RUNNING)
+            self._status_writer.start()
         except Exception:
             logger.exception("引擎啟動失敗")
             self._set_state(EngineState.STOPPED)
@@ -156,6 +166,8 @@ class TradingEngine:
         finally:
             self._pidfile.release()
             self._set_state(EngineState.STOPPED)
+            self._status_writer.stop()
+            self._status_writer.write_once()
 
     def panic(self, source: str = "api") -> CloseReport:
         """同步執行全面緊急平倉並維持 HALTED。"""
@@ -294,3 +306,71 @@ class TradingEngine:
     def _set_state(self, state: EngineState) -> None:
         with self._state_lock:
             self._state = state
+
+    def _full_status_snapshot(self) -> StatusSnapshot:
+        position = self._tracker.snapshot()
+        feed = self._feed.stats
+        session = self._scheduler.current_session()
+        return StatusSnapshot(
+            schema_version=1,
+            written_at=snapshot_time(),
+            pid=os.getpid(),
+            engine_state=self.state.value,
+            mode="LIVE" if self._settings.is_live else "SIMULATION",
+            symbol=self._settings.symbol,
+            session=session.value if session is not None else None,
+            broker_connected=self._gateway.is_connected,
+            degraded=False,
+            degraded_reason="",
+            position={
+                "direction": position.direction.value if position.direction else None,
+                "quantity": position.quantity,
+                "average_price": position.average_price,
+                "unrealized_ntd": position.unrealized_ntd,
+            },
+            pnl={
+                "realized_ntd": self._tracker.realized_pnl_ntd,
+                "total_ntd": self._tracker.total_pnl_ntd,
+            },
+            trade_count=self._tracker.trade_count,
+            strategies=[
+                {
+                    "id": strategy_id,
+                    "kind": type(strategy).__name__.removesuffix("Strategy").lower(),
+                    "state": strategy.state.value,
+                    "summary": strategy.describe(),
+                }
+                for strategy_id, strategy in self._strategies.items()
+            ],
+            feed={
+                "received": feed.received,
+                "evicted_overflow": feed.evicted_overflow,
+                "max_latency_ms": feed.max_latency_ms,
+                "last_tick_at": feed.last_tick_at.isoformat() if feed.last_tick_at else None,
+            },
+            emergency={
+                "is_closing": self._closer.is_closing,
+                "pending": self._closer.pending.value if self._closer.pending else None,
+                "last_succeeded": None,
+            },
+        )
+
+    def _degraded_status_snapshot(self) -> StatusSnapshot:
+        return StatusSnapshot(
+            schema_version=1,
+            written_at=snapshot_time(),
+            pid=os.getpid(),
+            engine_state=self.state.value,
+            mode="LIVE" if self._settings.is_live else "SIMULATION",
+            symbol=self._settings.symbol,
+            session=None,
+            broker_connected=None,
+            degraded=True,
+            degraded_reason="無法取得共用鎖",
+            position=None,
+            pnl=None,
+            trade_count=None,
+            strategies=None,
+            feed=None,
+            emergency=None,
+        )
