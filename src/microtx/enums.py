@@ -145,13 +145,21 @@ class StrategyState(str, Enum):
     CANCELLED = "CANCELLED"
     """使用者或風控主動取消，未進場。"""
 
+    ABORTED = "ABORTED"
+    """因緊急平倉或強制停機中止；可能曾持有部位。"""
+
     ERROR = "ERROR"
     """發生不可恢復錯誤，需人工介入。"""
 
     @property
     def is_terminal(self) -> bool:
         """是否為終態（不再接收行情事件）。"""
-        return self in {StrategyState.CLOSED, StrategyState.CANCELLED, StrategyState.ERROR}
+        return self in {
+            StrategyState.CLOSED,
+            StrategyState.CANCELLED,
+            StrategyState.ABORTED,
+            StrategyState.ERROR,
+        }
 
 
 class EngineState(str, Enum):
@@ -176,3 +184,11 @@ class SessionType(str, Enum):
 
     CLOSED = "CLOSED"
     """非交易時段。"""
+
+
+class NotifyLevel(str, Enum):
+    """通知訊息的重要程度。"""
+
+    INFO = "INFO"
+    WARNING = "WARNING"
+    CRITICAL = "CRITICAL"

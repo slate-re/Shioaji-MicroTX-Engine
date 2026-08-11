@@ -25,23 +25,39 @@ class Signal:
 
 _VALID_TRANSITIONS: dict[StrategyState, frozenset[StrategyState]] = {
     StrategyState.IDLE: frozenset(
-        {StrategyState.ARMED, StrategyState.CANCELLED, StrategyState.ERROR}
+        {
+            StrategyState.ARMED,
+            StrategyState.CANCELLED,
+            StrategyState.ABORTED,
+            StrategyState.ERROR,
+        }
     ),
     StrategyState.ARMED: frozenset(
-        {StrategyState.ENTRY_PENDING, StrategyState.CANCELLED, StrategyState.ERROR}
+        {
+            StrategyState.ENTRY_PENDING,
+            StrategyState.CANCELLED,
+            StrategyState.ABORTED,
+            StrategyState.ERROR,
+        }
     ),
     StrategyState.ENTRY_PENDING: frozenset(
         {
             StrategyState.IN_POSITION,
             StrategyState.EXIT_PENDING,
             StrategyState.CANCELLED,
+            StrategyState.ABORTED,
             StrategyState.ERROR,
         }
     ),
-    StrategyState.IN_POSITION: frozenset({StrategyState.EXIT_PENDING, StrategyState.ERROR}),
-    StrategyState.EXIT_PENDING: frozenset({StrategyState.CLOSED, StrategyState.ERROR}),
+    StrategyState.IN_POSITION: frozenset(
+        {StrategyState.EXIT_PENDING, StrategyState.ABORTED, StrategyState.ERROR}
+    ),
+    StrategyState.EXIT_PENDING: frozenset(
+        {StrategyState.CLOSED, StrategyState.ABORTED, StrategyState.ERROR}
+    ),
     StrategyState.CLOSED: frozenset(),
     StrategyState.CANCELLED: frozenset(),
+    StrategyState.ABORTED: frozenset(),
     StrategyState.ERROR: frozenset(),
 }
 
@@ -90,6 +106,12 @@ class Strategy(ABC):
             raise StrategyError(f"非法策略狀態轉換：{self._state.value} → {new_state.value}")
         self._state = new_state
         self._last_transition_reason = reason
+
+    def abort(self, reason: str) -> None:
+        """緊急中止策略；任何狀態下都不拋例外且不產生訊號。"""
+        if self._state.is_terminal:
+            return
+        self._transition(StrategyState.ABORTED, reason)
 
     @abstractmethod
     def on_tick(self, tick: TickEvent) -> list[Signal]:

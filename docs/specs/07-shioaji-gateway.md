@@ -26,13 +26,44 @@
 | `Direction.LONG` / `SHORT` | `Action.Buy` / `Action.Sell` |
 | `PriceType.LMT/MKP/MKT` | `FuturesPriceType.LMT/MKP/MKT` |
 | `TimeInForce.ROD/IOC/FOK` | `OrderType.ROD/IOC/FOK` |
-| `OrderIntent` → `octype` | `ENTRY`→`DayTrade`；其餘→`Cover` |
+| 所有 `OrderIntent` → `octype` | 由 `settings.futures_octype` 決定（見下） |
 
 要點：
 
 - 提供 `to_shioaji_*()` 與 `from_shioaji_*()` 成對函式
 - 未知值一律拋 `ValueError`，**不要靜默 fallback**（靜默 fallback 會變成下錯單）
-- `octype` 對映需可由 config 切換：當沖用 `DayTrade`，保守模式用 `Auto`
+
+#### `octype` 的正式契約
+
+`config.py` 新增（本任務允許修改 `config.py`）：
+
+```python
+futures_octype: str = Field(
+    default="Auto",
+    description="期貨倉別：Auto（自動判斷新倉/平倉，預設）或 DayTrade（當沖，需當沖資格）",
+)
+
+@field_validator("futures_octype")
+@classmethod
+def _validate_octype(cls, value: str) -> str:
+    allowed = {"Auto", "DayTrade"}
+    if value not in allowed:
+        raise ValueError(f"futures_octype 必須是 {sorted(allowed)} 之一")
+    return value
+```
+
+裁決：**所有意圖一律使用同一個 `octype`，不依 intent 分歧。**
+
+- 預設 `Auto`：Shioaji 自動判斷新倉／平倉，官方範例即用此值，最不易出錯
+- `DayTrade` 為選用：可享當沖保證金，但**需帳戶具備當沖資格**，
+  且進出場倉別必須一致才能正確沖銷
+
+⛔ **不要**實作「進場 `DayTrade`、出場 `Cover`」的分歧邏輯。
+兩者混用時的沖銷行為我們無法在模擬環境完整驗證，
+猜錯的後果是部位沒沖掉、保證金爆掉。單一值最安全。
+
+> `.env.example` 需加上 `FUTURES_OCTYPE=Auto` 並註明
+> 「改為 DayTrade 前請先在模擬環境確認帳戶當沖資格」。
 
 ---
 
@@ -100,11 +131,32 @@ def place_order(self, request: OrderRequest) -> OrderAck:
     return OrderAck(...)
 ```
 
-### 商品解析與快取
+### 商品解析與快取（規格已依 1.7.0 修正）
 
-- `api.Contracts.Futures.TMF.TMFR1` 這類存取要快取，不要每次下單重新走屬性鏈
-- 快取 `limit_up` / `limit_down`，供 `get_price_limits()` 與下單前檢查
-- 商品檔每日更新，**跨日時必須重新載入**
+```python
+contract = api.contracts.get(symbol)        # 精簡 Contract，足供下單與訂閱
+info = api.contracts.info(contract)         # FuturesInfo，含 limit_up / limit_down
+```
+
+- 用**小寫** `api.contracts`（1.7.0 新 API）。大寫 `api.Contracts` 是相容層，新程式碼不用
+- `get()` 查無代碼時回傳 `None` → 拋 `BrokerError`，不可讓 `None` 往下流
+- `limit_up` / `limit_down` 在 **`info()`** 的回傳物件上，不在 `Contract` 上；
+  `get_price_limits()` 必須走 `info()`
+- `Contract` 可長期快取；`info()` 的漲跌停建議加**短期 TTL**（如 60 秒），
+  因為交易所有分階段漲跌停
+
+#### ⛔ 不要實作「跨日重新載入商品檔」
+
+先前規格要求跨日重載，**這是錯的**。`docs/shioaji_guide.md` §11 記載官方說明：
+
+> 「1.7.0 起，商品合約會在有更新時自動保持最新，您不必再關心更新時機。」
+
+SDK 已自動處理。自己再寫一套只會製造 bug 與不一致。
+
+#### ⛔ 不要對指數期貨呼叫 `tick_bands()`
+
+台指期為 `tick_basis='fixed'`、`tick=1.0`，呼叫 `tick_bands()` 會拋 `ShioajiValueError`。
+直接用 `info.tick` 即可。
 
 ### 改單 / 刪單
 
@@ -133,11 +185,115 @@ def _order_callback(self, state: OrderState, msg: dict) -> None:
 - ⚠️ **成交回報可能早於委託回報**，`client_id` 反查失敗時要能容忍
   （記錄 WARNING 並以 `broker_order_id` 為主鍵，不可拋例外）
 
-### 斷線重連
+#### `AckEvent` / `CancelEvent` 的產生規則
 
-- 用 `api.set_event_callback()` 監聽 Session down（Event Code 對應見 guide）
-- 重連採指數退避，最多 N 次；重連成功後**必須重新訂閱行情**
-- 重連期間 `is_connected` 回傳 `False`，讓 `OrderRouter` 拒絕新單
+| 條件 | 產生 |
+|---|---|
+| `op_type == "New"` 且 `op_code == "00"` | `AckEvent`，`exchange_order_no = order.ordno` |
+| `op_type == "Cancel"` 且 `op_code == "00"` | `CancelEvent`（`reason` 依下表推導） |
+| `op_code != "00"` | `RejectEvent` |
+
+`CancelEvent` 的數量欄位取自委託回報 `status`：
+
+```python
+cancelled_quantity = status["cancel_quantity"]
+remaining_quantity = status["order_quantity"] - status["cancel_quantity"] - deal_quantity
+```
+
+#### ⚠️ `reason` 沒有對應的 SDK 欄位 —— 由本專案推導
+
+Shioaji 的委託回報**不區分**「使用者刪單」與「IOC 未成交自動失效」，
+兩者都是 `op_type == "Cancel"`。因此 `reason` 是**本專案的推導值**，規則如下（依序）：
+
+```python
+if client_id in self._pending_cancels:      # 本程式主動送出過 cancel_order()
+    reason = "user"
+elif original_request.time_in_force is TimeInForce.IOC:
+    reason = "ioc_expired"
+elif original_request.time_in_force is TimeInForce.FOK:
+    reason = "fok_expired"
+else:                                        # ROD 卻被取消 → 只可能是收盤作廢
+    reason = "session_end"
+```
+
+- `ShioajiGateway` 需維護 `_pending_cancels: set[str]`，
+  在 `cancel_order()` 送出時加入、收到對應 `CancelEvent` 後移除
+- 若查不到原始 request（例如重啟後收到舊委託的回報）→ `reason = ""`，
+  **不可猜測**。空字串代表「無法判定」，下游需容忍
+- 此推導規則必須寫在 `_mapping.py` 的 docstring 中，
+  並註明「Shioaji 未提供此資訊，屬本專案推導」，避免日後被誤認為 SDK 語意
+
+### 斷線重連（規格已修正：不要自己寫重連迴圈）
+
+`docs/shioaji_guide.md` §14 記載官方說明：
+
+> 「不用擔心在不用任何的設定下，我們將重連預設為 50 次。」
+
+底層 Solace SDK **已內建自動重連**。本專案的責任只有「監聽事件 + 重連後重新訂閱」。
+
+```python
+@api.quote.on_event
+def _on_event(resp_code: int, event_code: int, info: str, event: str) -> None:
+    ...
+```
+
+| Event Code | 處理 |
+|---|---|
+| `0` UP_NOTICE | `is_connected = True` |
+| `1` DOWN_ERROR / `2` CONNECT_FAILED / `12` RECONNECTING | `is_connected = False` |
+| `13` RECONNECTED | `is_connected = True` **並重新訂閱行情** |
+| `16` SUBSCRIPTION_OK | 記 DEBUG |
+| `17` VIRTUAL_ROUTER_NAME_CHANGED | ⚠️ **強制重新訂閱** |
+
+> Code 17 特別重要：Virtual Router 改名後既有訂閱會**靜默失效** ——
+> 行情停止推送卻沒有任何錯誤訊息。漏掉這條，引擎會在完全「正常」的狀態下瞎掉。
+
+- `is_connected` 為 `False` 期間，`place_order` 拋 `ConnectionLostError`，
+  讓 `OrderRouter` 拒絕新單
+- event callback 也適用「不得阻塞」紀律：只更新旗標與推事件，不做 I/O
+- ⛔ **不新增任何 `reconnect_max_attempts` 之類的設定** —— 重連不是我們的職責
+
+---
+
+## 部位與未成交委託的欄位對映（正式契約）
+
+### `list_positions()` → `Position`
+
+`FuturePosition` 只有七個欄位（見 `docs/shioaji_guide.md` §12）：
+
+| Shioaji `FuturePosition` | 本專案 `Position` |
+|---|---|
+| `code` | `code` |
+| `direction`（`Action.Buy/Sell`） | `direction`（`Direction.LONG/SHORT`） |
+| `quantity`（恆為正） | `quantity`（恆為正） |
+| `price`（平均成本） | `average_price` |
+| `pnl` | `unrealized_pnl` |
+| `id` / `last_price` | 不使用 |
+
+> 兩邊的「quantity 恆為正、方向由 direction 表示」是**同一個不變式**，
+> 直接對映即可，不需任何正負號轉換技巧。
+
+呼叫方式：`api.list_positions(account=api.futopt_account, timeout=5000)`
+
+### `list_trades()` → `OpenOrder`
+
+先 `api.update_status(api.futopt_account)`，再 `api.list_trades()`，
+篩選 `status.status` ∈ {`Submitted`, `PreSubmitted`, `PartFilled`}：
+
+| Shioaji | 本專案 `OpenOrder` |
+|---|---|
+| `trade.status.id`（= `order.id`） | `broker_order_id` |
+| 由 `_client_id_map` 反查 | `client_id`（查無則 `None`） |
+| `trade.contract.code` | `code` |
+| `trade.order.action` | `action` |
+| `trade.order.price` | `price` |
+| `trade.status.order_quantity` | `quantity` |
+| `trade.status.deal_quantity` | `filled_quantity` |
+
+`cancel_all_orders()` 即以上述清單逐一 `cancel_order(trade)`，
+**單筆失敗不可中斷整批**（緊急平倉依賴它盡量刪光），回傳成功筆數。
+
+---
 
 ### 登出
 
@@ -162,10 +318,103 @@ def _order_callback(self, state: OrderState, msg: dict) -> None:
 
 ---
 
+---
+
+## 07b 補強：`shioaji` 改為選用依賴（lazy import）
+
+### 問題
+
+目前 `shioaji` 是 `pyproject.toml` 的**必要依賴**，且 `_mapping.py` 在模組層級
+`import shioaji`。因此在未安裝 shioaji 的環境中：
+
+```
+ModuleNotFoundError: No module named 'shioaji'
+ERROR collecting tests/test_shioaji_mapping.py
+ERROR collecting tests/integration/test_shioaji_gateway.py
+```
+
+這削弱了兩項本專案刻意建立的價值：
+
+1. **「clone 下來就能跑 demo」的承諾被打折**
+   `08-cli-deploy.md` 要求 `git clone && pip install -e . && microtx demo` 三步可跑。
+   若 shioaji 是硬性依賴，只想看一眼 Demo 的人（例如面試官）
+   得先安裝一整套券商 SDK。這正是 `PaperGateway` 存在的理由要避免的摩擦。
+
+2. **分層隔離的效益被浪費**
+   架構刻意把 shioaji 侷限在兩個檔案，但只要依賴是硬性的，
+   「策略層零券商依賴」在**安裝層面**就不成立。隔離只做到一半。
+
+### 修正
+
+**(a) `pyproject.toml`：移出必要依賴，新增 `live` extra**
+
+```toml
+dependencies = [
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+live = ["shioaji>=1.2.0"]     # 實際連線永豐才需要
+dev  = [...]                  # 維持現狀
+```
+
+安裝方式因此分成兩種：
+
+| 指令 | 能做什麼 |
+|---|---|
+| `pip install -e ".[dev]"` | 離線 Demo、全部單元測試、開發 |
+| `pip install -e ".[dev,live]"` | 以上再加真實連線（模擬或實盤） |
+
+**(b) `_mapping.py` 與 `shioaji_gateway.py`：改為 lazy import**
+
+```python
+def _require_shioaji() -> ModuleType:
+    """延遲載入 shioaji，未安裝時給出可操作的錯誤訊息。"""
+    try:
+        import shioaji
+    except ImportError as exc:
+        raise BrokerError(
+            "未安裝 shioaji。若要連線永豐請執行：pip install -e \".[live]\"；"
+            "若只是要跑離線 Demo 或測試，請改用 PaperGateway。"
+        ) from exc
+    return shioaji
+```
+
+- 模組層級**不得**有 `import shioaji`
+- 型別註解用 `if TYPE_CHECKING:` 區塊 import，執行期不觸發
+- 錯誤訊息必須告訴使用者**下一步怎麼做**，不要只丟 `ModuleNotFoundError`
+
+**(c) `tests/test_shioaji_mapping.py`：不得因缺 shioaji 而 collection error**
+
+該檔的定位是「免連線測試」，應進一步做到「**免安裝 SDK**」：
+純轉換邏輯（列舉對映、`reason` 推導、`Decimal→float`）本來就不需要真的 shioaji。
+
+- 若轉換函式必須碰 shioaji 常數 → 以 `pytest.importorskip("shioaji")` 標記該檔或個別測試
+- 更好的作法：把不依賴 SDK 的推導邏輯（如 `CancelEvent.reason`）抽成純函式，
+  這部分**無條件測試**；只有真正需要 SDK 常數的對映才 skip
+
+### 對應測試
+
+| # | 情境 | 期望 |
+|---|---|---|
+| 28 | 未安裝 shioaji 時 `pytest` | **零 collection error**，相關測試 skip 而非 error |
+| 29 | 未安裝 shioaji 時建立 `ShioajiGateway` | 拋 `BrokerError`，訊息含 `pip install -e ".[live]"` |
+| 30 | 未安裝 shioaji 時 `import microtx` 及各層模組 | 全部成功（證明隔離在安裝層面也成立） |
+| 31 | 未安裝 shioaji 時 `microtx demo` | 完整跑完，退出碼 0 |
+
+> 情境 28/30 請用 `monkeypatch` 讓 `import shioaji` 失敗來模擬，
+> 不要依賴實際環境有沒有裝。
+
+---
+
 ## 驗收條件
 
 - [ ] 四項驗收指令全綠（整合測試預設跳過）
-- [ ] `import shioaji` 只出現在 `shioaji_gateway.py` 與 `_mapping.py`
+- [ ] `import shioaji` 只出現在 `shioaji_gateway.py` 與 `_mapping.py`，
+      且**皆為函式內的 lazy import**，模組層級不得出現
 - [ ] 金鑰不被存成一般屬性、不出現在任何日誌或例外訊息
 - [ ] `pytest -m "not integration"` 在無 `.env` 環境下全部通過
+- [ ] **在未安裝 `shioaji` 的環境中 `pytest` 零 collection error**
 - [ ] 交付時說明：斷線重連期間的委託如何處理、跨日商品檔如何更新

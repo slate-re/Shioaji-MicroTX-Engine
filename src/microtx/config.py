@@ -90,6 +90,10 @@ class Settings(BaseSettings):
         default="TMFR1",
         description="交易商品代碼：TMFR1（微台）/ MXFR1（小台）/ TXFR1（大台）",
     )
+    futures_octype: str = Field(
+        default="Auto",
+        description="期貨倉別：Auto（自動判斷）或 DayTrade（需具備當沖資格）",
+    )
 
     # ------------------------------------------------------------------
     #  4. 風險控管（硬性上限）
@@ -113,14 +117,24 @@ class Settings(BaseSettings):
     enable_night_session: bool = Field(default=False, description="是否啟用夜盤")
 
     # ------------------------------------------------------------------
-    #  6. 日誌
+    #  6. 緊急平倉與程序生命週期
+    # ------------------------------------------------------------------
+    emergency_max_retries: int = Field(default=5, ge=1, le=20)
+    emergency_retry_interval_sec: float = Field(default=0.5, ge=0.1, le=5.0)
+    emergency_use_market_order: bool = Field(default=True)
+    emergency_lock_timeout_sec: float = Field(default=2.0, ge=0.1, le=30.0)
+    flatten_on_shutdown: bool = Field(default=True)
+    pid_file: Path = Field(default=Path("runtime/microtx.pid"))
+
+    # ------------------------------------------------------------------
+    #  7. 日誌
     # ------------------------------------------------------------------
     log_level: str = Field(default="INFO", description="DEBUG / INFO / WARNING / ERROR")
     log_dir: Path = Field(default=Path("logs"), description="日誌輸出目錄")
     log_retention_days: int = Field(default=30, ge=1, le=365, description="日誌保留天數")
 
     # ------------------------------------------------------------------
-    #  7. 通知（選用）
+    #  8. 通知（選用）
     # ------------------------------------------------------------------
     telegram_bot_token: SecretStr = Field(default=SecretStr(""))
     telegram_chat_id: str = Field(default="")
@@ -141,6 +155,15 @@ class Settings(BaseSettings):
         """啟動時就驗證商品代碼合法，避免執行到一半才失敗。"""
         get_spec(value)  # 不合法會拋 ValueError
         return value.strip().upper()
+
+    @field_validator("futures_octype")
+    @classmethod
+    def _validate_octype(cls, value: str) -> str:
+        """只接受經規格核准且能保持進出場一致的期貨倉別。"""
+        allowed = {"Auto", "DayTrade"}
+        if value not in allowed:
+            raise ValueError(f"futures_octype 必須是 {sorted(allowed)} 之一")
+        return value
 
     @field_validator("log_level")
     @classmethod

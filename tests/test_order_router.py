@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from threading import RLock
+from threading import Event, RLock, Thread
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -126,6 +126,26 @@ def test_submit_unchecked_never_calls_risk(mocker) -> None:
     risk.check.assert_not_called()
     gateway.place_order.assert_called_once()
     assert router.submit_unchecked(request).accepted is False
+
+
+def test_gateway_place_order_runs_without_router_lock(mocker) -> None:
+    router, gateway, _ = _mock_router(mocker)
+    acquired = Event()
+
+    def inspect_lock(request: OrderRequest) -> OrderAck:
+        def contender() -> None:
+            with router._lock:
+                acquired.set()
+
+        thread = Thread(target=contender)
+        thread.start()
+        assert acquired.wait(0.5)
+        thread.join(0.5)
+        return OrderAck(request.client_id, "broker-1", True)
+
+    gateway.place_order.side_effect = inspect_lock
+
+    assert router.submit(_request(), _ctx()).accepted is True
 
 
 def test_broker_rejection_and_exception_clean_in_flight(mocker) -> None:

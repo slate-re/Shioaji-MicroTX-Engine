@@ -73,6 +73,10 @@ class ScalpStrategy(Strategy):
         """取消尚未出場的未持倉策略。"""
         self._transition(StrategyState.CANCELLED, reason)
 
+    def abort(self, reason: str) -> None:
+        """緊急中止策略，不依賴後續成交事件。"""
+        super().abort(reason)
+
     def on_tick(self, tick: TickEvent) -> list[Signal]:
         """依狀態處理穿越進場與曝險出場條件。"""
         self._latest_price = tick.price

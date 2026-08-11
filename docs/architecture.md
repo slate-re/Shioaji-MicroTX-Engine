@@ -336,7 +336,8 @@ class RiskManager:
   ├─[6] 產出 CloseReport 寫入稽核日誌與通知
   │
   └─[7] PANIC → 維持 HALTED，等待人工重啟
-         FLATTEN → 策略全部 CANCELLED，引擎回到 RUNNING 待命
+         FLATTEN → 引擎回到 RUNNING 待命
+         （兩種模式的策略皆轉 StrategyState.ABORTED，見 specs/06 §③）
 ```
 
 ### 5.4 資料結構

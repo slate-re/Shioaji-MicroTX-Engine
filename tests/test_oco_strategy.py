@@ -36,6 +36,17 @@ def _strategy(**kwargs: object) -> OcoStrategy:
     return OcoStrategy(**defaults)
 
 
+def test_abort_stops_oco_and_both_legs() -> None:
+    strategy = _strategy()
+    strategy.arm()
+
+    strategy.abort("緊急平倉")
+
+    assert strategy.state is StrategyState.ABORTED
+    assert strategy._long.state is StrategyState.ABORTED
+    assert strategy._short.state is StrategyState.ABORTED
+
+
 def test_upper_trigger_selects_long_and_disables_lower_leg() -> None:
     strategy = _strategy()
     strategy.arm()

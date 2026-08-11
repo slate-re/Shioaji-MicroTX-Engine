@@ -39,8 +39,22 @@ class Strategy(ABC):
 
 - 定義 `_VALID_TRANSITIONS: dict[StrategyState, frozenset[StrategyState]]`，
   在 `_transition` 中檢查。非法轉換是 bug，必須立刻爆而不是靜默忽略
-- 終態（`CLOSED` / `CANCELLED` / `ERROR`）之後 `on_tick()` 一律回傳空 list
+- 終態（`CLOSED` / `CANCELLED` / `ABORTED` / `ERROR`）之後 `on_tick()` 一律回傳空 list
 - `describe()` 回傳人類可讀的一行摘要，供 CLI 與日誌使用
+
+> **`ABORTED` 與 `abort()` 由任務 06 補上**（見 `06-emergency-close.md` §③）。
+> 重點差異：`_transition()` 對非法轉換必須拋 `StrategyError`，
+> 但 `abort()` 是**唯一不得拋例外**的入口 ——
+> 它是緊急平倉路徑的一部分，安全裝置不能被狀態機檢查卡住。
+>
+> 語意區分（稽核用，不可混用）：
+>
+> | 終態 | 意義 |
+> |---|---|
+> | `CLOSED` | 正常完成一輪交易並平倉 |
+> | `CANCELLED` | 主動取消，**從未進場** |
+> | `ABORTED` | 被緊急平倉／強制停機中止，**可能曾持有部位** |
+> | `ERROR` | 不可恢復錯誤，需人工介入 |
 
 ---
 

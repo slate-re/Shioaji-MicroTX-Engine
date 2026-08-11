@@ -66,6 +66,27 @@ def strategy_price_for_trigger(strategy: ScalpStrategy) -> float:
     return float(description.split(marker, maxsplit=1)[1].split(maxsplit=1)[0])
 
 
+@pytest.mark.parametrize("state", list(StrategyState))
+def test_abort_never_raises_in_any_state(state: StrategyState) -> None:
+    strategy = _strategy()
+    strategy._state = state
+
+    strategy.abort("緊急平倉")
+
+    expected = state if state.is_terminal else StrategyState.ABORTED
+    assert strategy.state is expected
+
+
+def test_aborted_strategy_ignores_tick_and_fill() -> None:
+    strategy = _strategy()
+    strategy.arm()
+    strategy.on_tick(_tick(23_150.0))
+    strategy.abort("緊急平倉")
+
+    assert strategy.on_tick(_tick(25_000.0)) == []
+    assert strategy.on_fill(_fill(Direction.LONG, 23_150.0)) == []
+
+
 def test_jump_crossing_triggers_entry() -> None:
     strategy = _strategy(trigger_price=23_150.0)
     strategy.arm()

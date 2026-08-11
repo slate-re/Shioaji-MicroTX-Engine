@@ -62,6 +62,12 @@ class OcoStrategy(Strategy):
             self._active.cancel(reason)
         self._transition(StrategyState.CANCELLED, reason)
 
+    def abort(self, reason: str) -> None:
+        """同步中止 OCO 本體與兩腿，且不產生任何委託訊號。"""
+        self._long.abort(reason)
+        self._short.abort(reason)
+        super().abort(reason)
+
     def on_tick(self, tick: TickEvent) -> list[Signal]:
         """選定先觸發方向，後續完全委派給該 ScalpStrategy。"""
         if self._state.is_terminal or self._state is StrategyState.EXIT_PENDING:

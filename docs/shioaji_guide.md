@@ -328,6 +328,151 @@ class TouchOrder:
 
 ---
 
+## 11. 商品合約 API（1.7.0 起大幅改版，務必注意）
+
+> 補抓自 <https://sinotrade.github.io/zh/tutor/contract/>
+
+### ⚠️ 重大變更：不再需要自行管理商品檔更新
+
+官方原文：
+
+> 「**不用再自己管理商品合約更新**……1.7.0 起，商品合約會在有更新時自動保持最新，
+> 您不必再關心更新時機。」
+
+**因此本專案不實作任何「跨日重新載入商品檔」的邏輯** ——
+SDK 已自動處理，自己再寫一套只會製造 bug。
+
+（僅供參考，交易所的更新時點：07:50 期貨、08:00 全市場、14:45 與 17:15 夜盤。）
+
+### 新版查詢方式
+
+```python
+c = api.contracts.get("TMFR1")        # 回傳精簡 Contract；查無則回 None
+info = api.contracts.info(c)          # 回傳 FuturesInfo（含漲跌停、乘數等）
+```
+
+- `get()` 取得的 `Contract` 已足夠用於**下單與訂閱行情**
+- `limit_up` / `limit_down` / `multiplier` / `tick` 在 **`info()`** 的回傳物件上，
+  **不在** `Contract` 上 —— `get_price_limits()` 必須走 `info()`
+
+`Contract` 欄位：`security_type` / `region` / `exchange` / `code` / `target_code`
+（`target_code` 僅連續月 R1/R2 有值）
+
+`FuturesInfo` 本專案會用到的欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `code` / `name` / `root` | 代碼、名稱、根代碼（如 `TMF`） |
+| `multiplier` / `contract_size` | 契約乘數（TXF=200、MXF=50、TMF=10） |
+| `tick` / `tick_value` | 最小跳動點（指數期貨為 `1.0`）、每跳價值 |
+| `tick_basis` | 指數期貨為 `"fixed"` |
+| `reference` | 參考價 |
+| `limit_up` / `limit_down` | 第一階段漲跌停 |
+| `delivery_month` / `last_trading_date` | 契約月份、最後交易日 |
+| `update_date` | 資料日期 |
+
+> ⚠️ `tick_bands()` **不可**對指數期貨呼叫（`tick_basis='fixed'`），會拋 `ShioajiValueError`。
+> 指數期貨直接用 `tick` 欄位即可（恆為 1.0）。
+
+### 舊寫法仍可用（相容層）
+
+`api.Contracts.Futures.TXF.TXFR1`（大寫 C）在 1.7.0 仍可用，
+但回傳的是 `FuturesInfo` 而非舊的 `Future` 物件。**新程式碼一律用小寫 `api.contracts`。**
+
+---
+
+## 12. 未實現損益 `list_positions()`
+
+> 補抓自 <https://sinotrade.github.io/zh/tutor/accounting/position/>
+
+```python
+api.list_positions(account=api.futopt_account, timeout=5000)
+```
+
+`FuturePosition` 欄位（**只有這七個**）：
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `id` | `int` | 部位代碼，供 `list_position_detail(detail_id=…)` 使用 |
+| `code` | `str` | 商品代碼（含月份，如 `TMFF6`） |
+| `direction` | `Action` | `Buy` / `Sell` |
+| `quantity` | `int` | 口數，**恆為正**，方向由 `direction` 表示 |
+| `price` | `float` | 平均成本價 |
+| `last_price` | `float` | 目前價格 |
+| `pnl` | `float` | 未實現損益（NTD） |
+
+> 這與本專案 `broker/base.py` 的 `Position` 是**一對一對應**，
+> 包含「quantity 恆為正、方向由 direction 表示」這個不變式 —— 兩邊語意一致，無需轉換技巧。
+
+---
+
+## 13. 委託狀態 `update_status()` / `list_trades()`
+
+> 補抓自 <https://sinotrade.github.io/zh/tutor/order/UpdateStatus/>
+
+```python
+api.update_status(api.futopt_account)            # 更新該帳號全部委託
+api.update_status(trade=trade)                   # 只更新單筆（關鍵字參數）
+trades = api.list_trades()                       # 取得最新 Trade 清單
+```
+
+`OrderStatus` 欄位：
+
+| 欄位 | 說明 |
+|---|---|
+| `id` | 關聯 Order 編碼（= 成交回報的 `trade_id`） |
+| `status` | `Cancelled` / `Filled` / `PartFilled` / `Inactive` / `Failed` / `PendingSubmit` / `PreSubmitted` / `Submitted` |
+| `status_code` / `msg` | 狀態碼與訊息 |
+| `order_quantity` | 委託數量 |
+| `deal_quantity` | 成交數量 |
+| `cancel_quantity` | 取消數量 |
+| `deals` | `list[Deal]` 成交明細 |
+| `order_datetime` / `modified_time` | 委託／最後改單時間（tz-aware +0800） |
+
+`Deal`：`seq` / `price` / `quantity` / `ts` / `datetime`
+
+`Trade.order` 上可取得：`id` / `seqno` / `ordno` / `action` / `price` / `quantity` /
+`order_type` / `price_type` / `octype`
+
+---
+
+## 14. 事件 Callback 與斷線重連
+
+> 補抓自 <https://sinotrade.github.io/zh/tutor/callback/event_cb/>
+
+```python
+@api.quote.on_event
+def event_callback(resp_code: int, event_code: int, info: str, event: str) -> None:
+    ...
+# 或 api.quote.set_event_callback(fn)
+```
+
+### ⚠️ 重大發現：SDK 已內建自動重連 50 次
+
+官方原文：
+
+> 「不用擔心在不用任何的設定下，**我們將重連預設為 50 次**。」
+
+底層是 Solace mesh broker。**因此本專案不自行實作行情連線的重連迴圈** ——
+只需監聽事件、在重連完成後重新訂閱即可。
+
+### 本專案會用到的 Event Code
+
+| Code | 列舉 | 本專案處理方式 |
+|---|---|---|
+| `0` | `SESSION_EVENT_UP_NOTICE` | 連線建立 → `is_connected = True` |
+| `1` | `SESSION_EVENT_DOWN_ERROR` | **連線中斷** → `is_connected = False`，拒絕新單 |
+| `2` | `SESSION_EVENT_CONNECT_FAILED_ERROR` | 連線失敗 → 同上 |
+| `12` | `SESSION_EVENT_RECONNECTING_NOTICE` | 重連中 → 維持 `is_connected = False` |
+| `13` | `SESSION_EVENT_RECONNECTED_NOTICE` | **重連成功** → `is_connected = True` 並**重新訂閱行情** |
+| `16` | `SESSION_EVENT_SUBSCRIPTION_OK` | 訂閱／取消訂閱成功 → 記 DEBUG |
+| `17` | `SESSION_EVENT_VIRTUAL_ROUTER_NAME_CHANGED` | ⚠️ 既有訂閱可能失效 → **強制重新訂閱** |
+
+> Code 17 特別容易被忽略：Virtual Router 改名後訂閱會靜默失效，
+> 行情就此停止推送卻沒有任何錯誤。必須當作「需重新訂閱」處理。
+
+---
+
 ## 附錄：本專案常用 Import
 
 ```python
