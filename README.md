@@ -1,6 +1,6 @@
 # Shioaji-MicroTX-Engine
 
-[![CI](https://github.com/jam/Shioaji-MicroTX-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/jam/Shioaji-MicroTX-Engine/actions/workflows/ci.yml)
+[![CI](https://github.com/slate-re/Shioaji-MicroTX-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/slate-re/Shioaji-MicroTX-Engine/actions/workflows/ci.yml)
 
 > 台指期（微台 TMF / 小台 MXF / 大台 TXF）**當沖自動條件單引擎**
 > 基於永豐金證券 [Shioaji API](https://sinotrade.github.io/zh/)，以 Python 實作。
@@ -89,6 +89,61 @@ microtx flatten    # 刪單 → 平倉 → 引擎繼續待命，可重新武裝�
 ---
 
 ## 架構
+
+### 資料流
+
+```mermaid
+flowchart LR
+    subgraph BROKER["broker/ 券商閘道層"]
+        SJ["Shioaji API"]
+        PG["PaperGateway<br/>（離線撮合）"]
+    end
+
+    subgraph MARKET["market/ 行情層"]
+        FILT["過濾 simtrade 試撮"]
+        Q(["tick_queue<br/>有界・丟舊留新"])
+    end
+
+    subgraph STRAT["strategies/ 策略層（純邏輯）"]
+        SC["ScalpStrategy<br/>穿越判定 + 點數 TP/SL"]
+        OCO["OcoStrategy"]
+    end
+
+    subgraph ENG["engine/ 引擎層"]
+        RISK{"RiskManager<br/>風控閘門"}
+        ROUTER["OrderRouter<br/>冪等 + 重試"]
+        POS["PositionTracker"]
+    end
+
+    KILL["🚨 EmergencyCloser<br/>microtx panic / flatten"]
+
+    SJ -- "Tick" --> FILT
+    PG -. "Demo / 測試" .-> FILT
+    FILT --> Q
+    Q -- "TickEvent" --> SC & OCO
+    SC & OCO -- "Signal" --> RISK
+    RISK -- "✅ 通過" --> ROUTER
+    RISK -. "❌ 拒絕並記錄原因" .-> SC
+    ROUTER -- "OrderRequest" --> SJ
+    SJ -- "成交/委託回報" --> POS
+    POS -- "部位・損益" --> RISK
+
+    KILL -- "① 直查真實部位" --> SJ
+    KILL == "② 繞過風控送平倉單" ==> ROUTER
+
+    style KILL fill:#ffe6e6,stroke:#d00,stroke-width:2px
+    style RISK fill:#fff4e6,stroke:#e08600
+    style Q fill:#e6f3ff,stroke:#0066cc
+```
+
+三個關鍵設計，圖上都看得到：
+
+1. **行情 callback 只做過濾與入佇列** —— 佇列有界且丟舊留新，行情執行緒永不阻塞
+2. **策略層只吐 `Signal`，不下單** —— 因此無 I/O、無執行緒，可 100% 單元測試
+3. **緊急平倉走粗線那條路** —— 直接向券商查部位、繞過 `RiskManager`。
+   因為風控的「單日虧損停機」會擋下救命的平倉單，那是致命反模式
+
+### 分層細節
 
 ```
                           ┌─────────────────────────────┐

@@ -42,8 +42,8 @@ dev = [
 microtx = "microtx.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/jam/Shioaji-MicroTX-Engine"
-Issues = "https://github.com/jam/Shioaji-MicroTX-Engine/issues"
+Homepage = "https://github.com/slate-re/Shioaji-MicroTX-Engine"
+Issues = "https://github.com/slate-re/Shioaji-MicroTX-Engine/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
