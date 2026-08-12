@@ -56,7 +56,7 @@ Shioaji **原生沒有條件單 API**。官方文件提供的 `TouchOrder` 只�
 
 ### 🚨 立即平倉（Kill Switch）
 
-突發事件時的一鍵止損。引擎在 Mac Mini 上無頭常駐，另開終端機（或 SSH 進去）即可觸發：
+突發事件時的一鍵止損。引擎無頭常駐時，另開終端機（或 SSH 進去）即可觸發：
 
 ```bash
 microtx panic      # 刪單 → 平倉 → 引擎停機，需人工重啟
@@ -339,28 +339,16 @@ microtx panic      # 平掉所有部位並停機
 
 ---
 
-## 跨機部署流程
+## 長期運行
 
-```
-MacBook（開發）                GitHub                Mac Mini（7×24 運行）
-     │                           │                          │
-     │  git push ──────────────► │                          │
-     │                           │ ◄────────── git pull ────│
-     │                           │                          │
-     │                                          .env 獨立設定（不同步）
-     │                                          launchd 常駐 + 開機自啟
-```
+引擎設計為無人值守常駐，附 `launchd` 設定與健康檢查腳本：
 
-**關鍵原則：`.env` 與憑證檔永遠不進 Git，兩台機器各自維護一份。**
+- **崩潰自動重啟**，正常退出（如手動 `panic`）則不重啟
+- **`healthcheck.sh` 以四種退出碼區分**：正常 / 未運行 / 無回應 / 卡在共用鎖 ——
+  PID 存活不代表引擎健康，靠 `status.json` 的新鮮度才分辨得出「活著但卡死」
+- **SSH 進去就能 `microtx panic`**，人不在電腦前也能止損
 
-Mac Mini 部署重點：
-
-- 用 `launchd`（非 `cron`）常駐，支援崩潰自動重啟
-- 系統設定開啟「自動設定日期與時間」（時間偏差會導致 `Sign data is timeout`）
-- 電源設定關閉自動睡眠
-- 日誌按日輪替，預設保留 30 天
-- `.env` 權限設 `chmod 600`
-- **SSH 進去就能 `microtx panic`** —— 人不在電腦前也能止損
+安裝步驟與踩坑筆記見 [`docs/deployment.md`](docs/deployment.md)。
 
 ---
 
