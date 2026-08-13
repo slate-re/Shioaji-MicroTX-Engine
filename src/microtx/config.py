@@ -127,6 +127,8 @@ class Settings(BaseSettings):
     pid_file: Path = Field(default=Path("runtime/microtx.pid"))
     status_file: Path = Field(default=Path("runtime/status.json"))
     status_write_interval_sec: float = Field(default=5.0, ge=1.0, le=60.0)
+    daily_state_file: Path = Field(default=Path("runtime/daily_state.json"))
+    trading_day_boundary: time = Field(default=time(6, 0))
 
     # ------------------------------------------------------------------
     #  7. 日誌
@@ -145,7 +147,9 @@ class Settings(BaseSettings):
     #  驗證器
     # ==================================================================
 
-    @field_validator("session_start", "session_end", "force_close_time", mode="before")
+    @field_validator(
+        "session_start", "session_end", "force_close_time", "trading_day_boundary", mode="before"
+    )
     @classmethod
     def _validate_time(cls, value: str | time) -> time:
         """允許 ``.env`` 以 ``"13:40"`` 形式提供時間。"""
@@ -188,6 +192,8 @@ class Settings(BaseSettings):
                 f"force_close_time ({self.force_close_time}) 必須落在 "
                 f"({self.session_start}, {self.session_end}] 區間內"
             )
+        if not (time(5, 0) <= self.trading_day_boundary < self.session_start):
+            raise ValueError("trading_day_boundary 必須落在夜盤 05:00 收盤至日盤開盤之間")
         return self
 
     @model_validator(mode="after")

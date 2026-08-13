@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = subparsers.add_parser("run", help="啟動常駐交易引擎")
     run.add_argument("--yes", action="store_true", help="確認實盤啟動")
+    run.add_argument(
+        "--reset-daily-state",
+        action="store_true",
+        help="人工確認捨棄損毀的當日累計並從零開始",
+    )
     run.add_argument("--strategy", choices=("scalp", "oco"))
     run.add_argument("--direction", choices=("long", "short"))
     run.add_argument("--trigger", type=float)
@@ -109,7 +114,12 @@ def _run(args: argparse.Namespace, settings: Settings) -> int:
         return EXIT_USER_ERROR
     from microtx.broker.shioaji_gateway import ShioajiGateway
 
-    engine = TradingEngine(settings, ShioajiGateway(settings))
+    if bool(args.reset_daily_state):
+        from microtx.engine.daily_state import DailyStateStore
+
+        DailyStateStore(settings.daily_state_file, boundary=settings.trading_day_boundary).clear()
+
+    engine = TradingEngine(settings, ShioajiGateway(settings), notifier=None)
     strategy = _strategy_from_args(args, settings)
     if strategy is not None:
         strategy.arm()

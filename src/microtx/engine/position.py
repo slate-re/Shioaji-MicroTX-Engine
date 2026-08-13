@@ -8,6 +8,7 @@ from threading import RLock
 from microtx.broker.base import FillEvent, Position
 from microtx.contracts import FuturesSpec
 from microtx.enums import Direction
+from microtx.exceptions import MicroTXError
 from microtx.market.tick import TickEvent
 
 
@@ -42,6 +43,7 @@ class PositionTracker:
         self._realized_pnl_ntd = 0.0
         self._trade_count = 0
         self._counted_entries: set[str] = set()
+        self._daily_restored = False
 
     def on_fill(self, fill: FillEvent) -> None:
         """依 FIFO 先平後開更新部位與已實現損益。"""
@@ -114,6 +116,17 @@ class PositionTracker:
             self._realized_pnl_ntd = 0.0
             self._trade_count = 0
             self._counted_entries.clear()
+
+    def restore_daily(self, *, realized_pnl_ntd: float, trade_count: int) -> None:
+        """由持久化狀態還原當日累計值；每個實例僅允許一次。"""
+        if trade_count < 0:
+            raise MicroTXError("還原交易次數不可為負數")
+        with self._lock:
+            if self._daily_restored:
+                raise MicroTXError("當日累計值不可重複還原")
+            self._realized_pnl_ntd = realized_pnl_ntd
+            self._trade_count = trade_count
+            self._daily_restored = True
 
     def reconcile(self, broker_positions: list[Position]) -> list[str]:
         """比對內部快照與券商實際部位，回傳所有差異描述。"""

@@ -192,3 +192,12 @@ class NotifyLevel(str, Enum):
     INFO = "INFO"
     WARNING = "WARNING"
     CRITICAL = "CRITICAL"
+
+
+class LoadOutcome(str, Enum):
+    """當日狀態檔的載入結果。"""
+
+    FRESH = "FRESH"
+    RESTORED = "RESTORED"
+    ROLLED_OVER = "ROLLED_OVER"
+    UNREADABLE = "UNREADABLE"

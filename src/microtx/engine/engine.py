@@ -19,20 +19,25 @@ from microtx.broker.base import (
     new_client_id,
 )
 from microtx.config import Settings
+from microtx.engine.daily_state import DailyState, DailyStateStore
 from microtx.engine.emergency import CloseReport, EmergencyCloser
 from microtx.engine.order_router import OrderRouter
 from microtx.engine.position import PositionTracker
 from microtx.engine.risk import RiskContext, RiskManager
 from microtx.engine.scheduler import Scheduler
 from microtx.engine.status import StatusSnapshot, StatusWriter, snapshot_time
+from microtx.engine.trading_day import trading_date
 from microtx.enums import (
     CloseMode,
     EngineState,
+    LoadOutcome,
+    NotifyLevel,
     PriceType,
     TimeInForce,
 )
-from microtx.exceptions import StrategyError
+from microtx.exceptions import MicroTXError, StrategyError
 from microtx.market.feed import MarketFeed
+from microtx.notify.base import Notifier
 from microtx.strategies.base import Signal, Strategy
 from microtx.utils.logger import get_logger
 from microtx.utils.pidfile import PidFile
@@ -44,7 +49,13 @@ _TAIPEI = ZoneInfo("Asia/Taipei")
 class TradingEngine:
     """串接行情、策略、風控、下單與獨立 kill switch worker。"""
 
-    def __init__(self, settings: Settings, gateway: BrokerGateway) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        gateway: BrokerGateway,
+        *,
+        notifier: Notifier | None = None,
+    ) -> None:
         self._settings = settings
         self._gateway = gateway
         self._state = EngineState.STOPPED
@@ -52,12 +63,17 @@ class TradingEngine:
         self._shared_lock = RLock()
         self._risk = RiskManager(settings)
         self._tracker = PositionTracker(settings.spec)
+        self._daily_store = DailyStateStore(
+            settings.daily_state_file, boundary=settings.trading_day_boundary
+        )
+        self._daily_state_writable = True
+        self._notifier = notifier
         self._router = OrderRouter(gateway, risk=self._risk, lock=self._shared_lock)
         self._feed = MarketFeed(gateway, symbol=settings.symbol)
         self._scheduler = Scheduler(
             settings,
             on_force_close=self._scheduled_flatten,
-            on_reset_daily=self._tracker.reset_daily,
+            on_reset_daily=self._reset_daily_state,
         )
         self._strategies: dict[str, Strategy] = {}
         self._strategy_sequence = 0
@@ -78,6 +94,7 @@ class TradingEngine:
             on_state_change=self._set_state,
             on_cancel_strategies=self._cancel_strategies,
             is_tradable=self._scheduler.is_tradable,
+            notifier=notifier,
         )
         self._status_writer = StatusWriter(
             settings.status_file,
@@ -108,6 +125,7 @@ class TradingEngine:
             return
         self._set_state(EngineState.STARTING)
         try:
+            daily_state_unknown = self._load_daily_state()
             self._pidfile.acquire()
             self._gateway.connect()
             self._gateway.set_order_event_callback(self._event_queue.put_nowait)
@@ -127,7 +145,7 @@ class TradingEngine:
             ]
             for thread in self._threads:
                 thread.start()
-            self._set_state(EngineState.RUNNING)
+            self._set_state(EngineState.HALTED if daily_state_unknown else EngineState.RUNNING)
             self._status_writer.start()
         except Exception:
             logger.exception("引擎啟動失敗")
@@ -164,6 +182,7 @@ class TradingEngine:
         try:
             self._gateway.disconnect()
         finally:
+            self._save_daily_state()
             self._pidfile.release()
             self._set_state(EngineState.STOPPED)
             self._status_writer.stop()
@@ -224,6 +243,7 @@ class TradingEngine:
             self._router.on_event(event)
             if isinstance(event, FillEvent):
                 self._tracker.on_fill(event)
+                self._save_daily_state()
             if request is None or not request.strategy_id:
                 continue
             strategy = self._strategies.get(request.strategy_id)
@@ -374,3 +394,67 @@ class TradingEngine:
             feed=None,
             emergency=None,
         )
+
+    def _load_daily_state(self) -> bool:
+        result = self._daily_store.load(datetime.now(_TAIPEI))
+        if result.outcome is LoadOutcome.UNREADABLE:
+            self._daily_state_writable = False
+            message = f"當日風控狀態無法讀取，禁止新倉：{result.error}"
+            logger.critical(message)
+            self._notify_daily_state_failure(message)
+            return True
+        state = result.state
+        if state is None:
+            raise MicroTXError("可讀取的當日狀態缺少 state")
+        self._tracker.restore_daily(
+            realized_pnl_ntd=state.realized_pnl_ntd, trade_count=state.trade_count
+        )
+        if result.outcome is LoadOutcome.RESTORED:
+            logger.info(
+                "已還原當日累計：損益 %.0f 元 / %d 筆",
+                state.realized_pnl_ntd,
+                state.trade_count,
+            )
+        elif result.outcome is LoadOutcome.ROLLED_OVER and result.previous is not None:
+            logger.info(
+                "交易日切換，前日結算：損益 %.0f 元 / %d 筆",
+                result.previous.realized_pnl_ntd,
+                result.previous.trade_count,
+            )
+        else:
+            logger.info("本交易日首次啟動，當日累計從零開始")
+        self._save_daily_state()
+        return False
+
+    def _save_daily_state(self) -> None:
+        if not self._daily_state_writable:
+            return
+        try:
+            now = datetime.now(_TAIPEI)
+            self._daily_store.save(
+                DailyState(
+                    schema_version=1,
+                    trading_date=trading_date(now, boundary=self._settings.trading_day_boundary),
+                    realized_pnl_ntd=self._tracker.realized_pnl_ntd,
+                    trade_count=self._tracker.trade_count,
+                    updated_at=now,
+                )
+            )
+        except Exception:
+            logger.warning("當日狀態寫入失敗", exc_info=True)
+
+    def _reset_daily_state(self) -> None:
+        self._tracker.reset_daily()
+        try:
+            self._daily_store.clear()
+        except Exception:
+            logger.warning("清除前一交易日狀態失敗", exc_info=True)
+        self._save_daily_state()
+
+    def _notify_daily_state_failure(self, message: str) -> None:
+        if self._notifier is None:
+            return
+        try:
+            self._notifier.notify(NotifyLevel.CRITICAL, "當日風控狀態損毀", message)
+        except Exception:
+            logger.warning("當日狀態異常通知失敗", exc_info=True)

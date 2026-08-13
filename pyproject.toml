@@ -16,7 +16,10 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    # 引擎常駐與緊急平倉依賴 Unix signal（SIGUSR1/SIGUSR2），Windows 不支援。
+    # Windows 仍可執行 `microtx demo` 與絕大多數單元測試。
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
 

@@ -5,10 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from microtx.broker.base import FillEvent, Position
 from microtx.contracts import TMF
 from microtx.engine.position import PositionTracker
 from microtx.enums import Direction
+from microtx.exceptions import MicroTXError
 from microtx.market.tick import TickEvent
 
 _NOW = datetime(2026, 1, 5, 9, 0, tzinfo=ZoneInfo("Asia/Taipei"))
@@ -75,6 +78,16 @@ def test_reset_daily_preserves_position() -> None:
     assert tracker.realized_pnl_ntd == 0.0
     assert tracker.trade_count == 0
     assert tracker.snapshot().quantity == 0
+
+
+def test_restore_daily_loads_only_accumulators_and_rejects_second_call() -> None:
+    tracker = PositionTracker(TMF)
+    tracker.restore_daily(realized_pnl_ntd=-2_900.0, trade_count=4)
+    assert tracker.realized_pnl_ntd == -2_900.0
+    assert tracker.trade_count == 4
+    assert tracker.snapshot().quantity == 0
+    with pytest.raises(MicroTXError, match="不可重複還原"):
+        tracker.restore_daily(realized_pnl_ntd=0.0, trade_count=0)
 
 
 def test_reconcile_detects_direction_quantity_and_average() -> None:

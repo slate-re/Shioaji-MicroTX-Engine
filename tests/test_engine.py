@@ -5,16 +5,28 @@ from __future__ import annotations
 import os
 import signal
 import time
+from argparse import Namespace
 from datetime import datetime
 from pathlib import Path
 from threading import Event, Thread
+from zoneinfo import ZoneInfo
 
-from microtx.broker.base import OrderRequest
+from microtx.broker.base import FillEvent, OrderRequest
 from microtx.broker.paper_gateway import PaperGateway
+from microtx.cli.commands import _run
 from microtx.config import Settings
 from microtx.contracts import TMF
 from microtx.engine.engine import TradingEngine
-from microtx.enums import CloseMode, Direction, EngineState, OrderIntent, PriceType, TimeInForce
+from microtx.enums import (
+    CloseMode,
+    Direction,
+    EngineState,
+    NotifyLevel,
+    OrderIntent,
+    PriceType,
+    SessionType,
+    TimeInForce,
+)
 from microtx.exceptions import StrategyError
 from microtx.market.tick import TickEvent
 from microtx.strategies.base import Signal
@@ -34,6 +46,18 @@ def _seed_position(gateway: PaperGateway) -> None:
             OrderIntent.ENTRY,
             "seed",
         )
+    )
+
+
+def _fill(client_id: str, action: Direction, price: float, quantity: int) -> FillEvent:
+    return FillEvent(
+        client_id,
+        f"broker-{client_id}",
+        "TMFF6",
+        action,
+        price,
+        quantity,
+        datetime.now(ZoneInfo("Asia/Taipei")),
     )
 
 
@@ -144,7 +168,12 @@ def test_shutdown_handler_only_sets_event(tmp_path: Path) -> None:
 def test_start_and_stop_manage_all_resources(mocker, tmp_path: Path) -> None:
     gateway = PaperGateway(spec=TMF)
     engine = TradingEngine(
-        Settings(pid_file=tmp_path / "engine.pid", flatten_on_shutdown=False), gateway
+        Settings(
+            pid_file=tmp_path / "engine.pid",
+            daily_state_file=tmp_path / "daily.json",
+            flatten_on_shutdown=False,
+        ),
+        gateway,
     )
     mocker.patch.object(engine, "_install_signal_handlers")
 
@@ -169,6 +198,7 @@ def test_stop_writes_final_stopped_status(mocker, tmp_path: Path) -> None:
             _env_file=None,
             pid_file=tmp_path / "engine.pid",
             status_file=status_file,
+            daily_state_file=tmp_path / "daily.json",
             flatten_on_shutdown=False,
         ),
         gateway,
@@ -184,7 +214,10 @@ def test_stop_writes_final_stopped_status(mocker, tmp_path: Path) -> None:
 
 def test_shutdown_with_flatten_calls_emergency_closer(mocker, tmp_path: Path) -> None:
     gateway = PaperGateway(spec=TMF)
-    engine = TradingEngine(Settings(pid_file=tmp_path / "engine.pid"), gateway)
+    engine = TradingEngine(
+        Settings(pid_file=tmp_path / "engine.pid", daily_state_file=tmp_path / "daily.json"),
+        gateway,
+    )
     mocker.patch.object(engine, "_install_signal_handlers")
     panic = mocker.spy(engine._closer, "execute")
     engine.start()
@@ -192,6 +225,156 @@ def test_shutdown_with_flatten_calls_emergency_closer(mocker, tmp_path: Path) ->
     engine.stop()
 
     panic.assert_called_with(CloseMode.PANIC, "shutdown")
+
+
+class _RecordingNotifier:
+    def __init__(self) -> None:
+        self.messages: list[tuple[NotifyLevel, str, str]] = []
+
+    def notify(self, level: NotifyLevel, title: str, body: str) -> None:
+        self.messages.append((level, title, body))
+
+
+def test_unreadable_daily_state_starts_halted_and_notifies(mocker, tmp_path: Path) -> None:
+    daily_file = tmp_path / "daily.json"
+    daily_file.write_text("{broken", encoding="utf-8")
+    gateway = PaperGateway(spec=TMF)
+    notifier = _RecordingNotifier()
+    engine = TradingEngine(
+        Settings(
+            _env_file=None,
+            pid_file=tmp_path / "engine.pid",
+            daily_state_file=daily_file,
+            flatten_on_shutdown=False,
+        ),
+        gateway,
+        notifier=notifier,
+    )
+    mocker.patch.object(engine, "_install_signal_handlers")
+    engine.start()
+
+    assert engine.state is EngineState.HALTED
+    assert notifier.messages[0][0] is NotifyLevel.CRITICAL
+    engine._closer._is_tradable = lambda: True
+    assert engine.panic("test").succeeded is True
+    engine._set_state(EngineState.HALTED)
+    assert engine.flatten("test").succeeded is True
+    engine.stop()
+    assert daily_file.read_text(encoding="utf-8") == "{broken"
+
+
+def test_unreadable_daily_state_without_notifier_does_not_raise(mocker, tmp_path: Path) -> None:
+    daily_file = tmp_path / "daily.json"
+    daily_file.write_text("invalid", encoding="utf-8")
+    engine = TradingEngine(
+        Settings(
+            _env_file=None,
+            pid_file=tmp_path / "engine.pid",
+            daily_state_file=daily_file,
+            flatten_on_shutdown=False,
+        ),
+        PaperGateway(spec=TMF),
+    )
+    mocker.patch.object(engine, "_install_signal_handlers")
+    engine.start()
+    assert engine.state is EngineState.HALTED
+    engine.stop()
+
+
+def test_reset_daily_state_flag_clears_corrupt_file_before_engine_start(
+    mocker, tmp_path: Path
+) -> None:
+    daily_file = tmp_path / "daily.json"
+    daily_file.write_text("invalid", encoding="utf-8")
+    settings = Settings(_env_file=None, daily_state_file=daily_file)
+    gateway_class = mocker.patch("microtx.broker.shioaji_gateway.ShioajiGateway")
+    engine_class = mocker.patch("microtx.cli.commands.TradingEngine")
+    args = Namespace(
+        yes=False,
+        reset_daily_state=True,
+        strategy=None,
+        direction=None,
+        trigger=None,
+        upper=None,
+        lower=None,
+        tp=None,
+        sl=None,
+    )
+
+    assert _run(args, settings) == 0
+    assert not daily_file.exists()
+    engine_class.assert_called_once_with(settings, gateway_class.return_value, notifier=None)
+    engine_class.return_value.run_forever.assert_called_once()
+
+
+def test_daily_state_write_failure_only_warns(mocker, tmp_path: Path) -> None:
+    engine = TradingEngine(
+        Settings(_env_file=None, daily_state_file=tmp_path / "daily.json"),
+        PaperGateway(spec=TMF),
+    )
+    mocker.patch.object(engine._daily_store, "save", side_effect=OSError("唯讀"))
+    warning = mocker.patch("microtx.engine.engine.logger.warning")
+    engine._save_daily_state()
+    warning.assert_called_once()
+
+
+def test_daily_state_notification_failure_only_warns(mocker, tmp_path: Path) -> None:
+    notifier = _RecordingNotifier()
+    engine = TradingEngine(
+        Settings(_env_file=None, daily_state_file=tmp_path / "daily.json"),
+        PaperGateway(spec=TMF),
+        notifier=notifier,
+    )
+    mocker.patch.object(notifier, "notify", side_effect=RuntimeError("通知失敗"))
+    warning = mocker.patch("microtx.engine.engine.logger.warning")
+    engine._notify_daily_state_failure("unknown")
+    warning.assert_called_once()
+
+
+def _restart_with_realized_loss(
+    mocker, tmp_path: Path, *, realized_loss: float
+) -> tuple[TradingEngine, PaperGateway]:
+    settings = Settings(
+        _env_file=None,
+        pid_file=tmp_path / "engine.pid",
+        daily_state_file=tmp_path / "daily.json",
+        status_file=tmp_path / "status.json",
+        max_daily_loss=3_000.0,
+        order_cooldown_sec=0,
+        flatten_on_shutdown=False,
+    )
+    first = TradingEngine(settings, PaperGateway(spec=TMF))
+    mocker.patch.object(first, "_install_signal_handlers")
+    first.start()
+    first._tracker.on_fill(_fill("loss-entry", Direction.LONG, 23_000.0, 1))
+    first._tracker.on_fill(_fill("loss-exit", Direction.SHORT, 23_000.0 - realized_loss / 10.0, 1))
+    first.stop()
+
+    gateway = PaperGateway(spec=TMF)
+    restarted = TradingEngine(settings, gateway)
+    mocker.patch.object(restarted, "_install_signal_handlers")
+    restarted.start()
+    restarted._scheduler.current_session = lambda now=None: SessionType.DAY
+    return restarted, gateway
+
+
+def test_restart_restores_limit_and_rejects_entry_at_max_loss(mocker, tmp_path: Path) -> None:
+    # 回歸 bug A：launchd 重啟後不得把已達上限的 -3000 元靜默歸零並重新開倉。
+    engine, gateway = _restart_with_realized_loss(mocker, tmp_path, realized_loss=3_000.0)
+    place = mocker.spy(gateway, "place_order")
+    engine._submit_signals("strategy-1", [Signal(OrderIntent.ENTRY, Direction.LONG, 1, "test")])
+    assert engine._tracker.realized_pnl_ntd == -3_000.0
+    assert place.call_count == 0
+    engine.stop()
+
+
+def test_restart_restores_exact_loss_and_allows_entry_below_limit(mocker, tmp_path: Path) -> None:
+    engine, gateway = _restart_with_realized_loss(mocker, tmp_path, realized_loss=2_900.0)
+    place = mocker.spy(gateway, "place_order")
+    assert engine._tracker.realized_pnl_ntd == -2_900.0
+    engine._submit_signals("strategy-1", [Signal(OrderIntent.ENTRY, Direction.LONG, 1, "test")])
+    assert place.call_count == 1
+    engine.stop()
 
 
 def test_add_strategy_returns_ids_and_rejects_invalid_engine_state(tmp_path: Path) -> None:

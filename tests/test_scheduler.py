@@ -63,11 +63,24 @@ def test_force_close_only_once_per_day() -> None:
     assert closes == ["scheduler"]
 
 
-def test_date_change_triggers_daily_reset() -> None:
-    scheduler, _, resets = _scheduler()
-    scheduler._check(_dt("2026-01-05T23:59"))
-    scheduler._check(_dt("2026-01-06T00:00"))
-    scheduler._check(_dt("2026-01-06T00:01"))
+def test_midnight_does_not_reset_night_session_daily_state() -> None:
+    scheduler, _, resets = _scheduler(night=True)
+    # 回歸 bug B：夜盤跨午夜仍屬同一交易日，絕不可在盤中清空風控累計。
+    with freeze_time(_dt("2026-01-05T23:59")):
+        scheduler._check(datetime.now(_TAIPEI))
+    with freeze_time(_dt("2026-01-06T00:01")):
+        scheduler._check(datetime.now(_TAIPEI))
+    assert resets == []
+
+
+def test_crossing_trading_day_boundary_resets_exactly_once() -> None:
+    scheduler, _, resets = _scheduler(night=True)
+    with freeze_time(_dt("2026-01-10T05:59")):
+        scheduler._check(datetime.now(_TAIPEI))
+    with freeze_time(_dt("2026-01-10T06:00")):
+        scheduler._check(datetime.now(_TAIPEI))
+    with freeze_time(_dt("2026-01-10T07:00")):
+        scheduler._check(datetime.now(_TAIPEI))
     assert resets == ["reset"]
 
 

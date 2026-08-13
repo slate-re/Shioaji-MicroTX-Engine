@@ -8,6 +8,7 @@ from threading import Event, Lock, Thread
 from zoneinfo import ZoneInfo
 
 from microtx.config import Settings
+from microtx.engine.trading_day import trading_date
 from microtx.enums import SessionType
 
 _TAIPEI = ZoneInfo("Asia/Taipei")
@@ -32,7 +33,7 @@ class Scheduler:
         self._lifecycle_lock = Lock()
         self._thread: Thread | None = None
         self._last_force_close_date: date | None = None
-        self._last_seen_date: date | None = None
+        self._last_trading_date: date | None = None
 
     def current_session(self, now: datetime | None = None) -> SessionType:
         """依台北時間回傳日盤、夜盤或休市。"""
@@ -43,13 +44,13 @@ class Scheduler:
         ):
             return SessionType.DAY
         if self._settings.enable_night_session:
-            trading_date = (
+            session_trading_date = (
                 current.date()
                 if current_time >= _NIGHT_START
                 else current.date() - timedelta(days=1)
             )
             in_night = current_time >= _NIGHT_START or current_time < _NIGHT_END
-            if in_night and self._is_weekday(trading_date):
+            if in_night and self._is_weekday(session_trading_date):
                 return SessionType.NIGHT
         return SessionType.CLOSED
 
@@ -81,16 +82,17 @@ class Scheduler:
 
     def _check(self, now: datetime) -> None:
         current = self._as_taipei(now)
-        if self._last_seen_date is not None and current.date() != self._last_seen_date:
+        current_trading_date = trading_date(current, boundary=self._settings.trading_day_boundary)
+        if self._last_trading_date is not None and current_trading_date != self._last_trading_date:
             self._on_reset_daily()
-        self._last_seen_date = current.date()
+        self._last_trading_date = current_trading_date
         current_time = current.time().replace(tzinfo=None)
         if (
             self.current_session(current) is SessionType.DAY
             and current_time >= self._settings.force_close_time
-            and self._last_force_close_date != current.date()
+            and self._last_force_close_date != current_trading_date
         ):
-            self._last_force_close_date = current.date()
+            self._last_force_close_date = current_trading_date
             self._on_force_close("scheduler")
 
     @staticmethod
