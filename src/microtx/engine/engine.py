@@ -23,6 +23,7 @@ from microtx.engine.daily_state import DailyState, DailyStateStore
 from microtx.engine.emergency import CloseReport, EmergencyCloser
 from microtx.engine.order_router import OrderRouter
 from microtx.engine.position import PositionTracker
+from microtx.engine.quote_writer import QuoteWriter
 from microtx.engine.risk import RiskContext, RiskManager
 from microtx.engine.scheduler import Scheduler
 from microtx.engine.status import StatusSnapshot, StatusWriter, snapshot_time
@@ -69,7 +70,21 @@ class TradingEngine:
         self._daily_state_writable = True
         self._notifier = notifier
         self._router = OrderRouter(gateway, risk=self._risk, lock=self._shared_lock)
-        self._feed = MarketFeed(gateway, symbol=settings.symbol)
+        self._feed = MarketFeed(
+            gateway,
+            symbol=settings.symbol,
+            capture_latest_tick=settings.enable_quote_snapshot,
+        )
+        self._quote_writer = (
+            QuoteWriter(
+                settings.quote_file,
+                symbol=settings.symbol,
+                interval_sec=settings.quote_write_interval_sec,
+                latest_tick=lambda: self._feed.latest_tick,
+            )
+            if settings.enable_quote_snapshot
+            else None
+        )
         self._scheduler = Scheduler(
             settings,
             on_force_close=self._scheduled_flatten,
@@ -147,6 +162,8 @@ class TradingEngine:
                 thread.start()
             self._set_state(EngineState.HALTED if daily_state_unknown else EngineState.RUNNING)
             self._status_writer.start()
+            if self._quote_writer is not None:
+                self._quote_writer.start()
         except Exception:
             logger.exception("引擎啟動失敗")
             self._set_state(EngineState.STOPPED)
@@ -166,6 +183,8 @@ class TradingEngine:
         self._set_state(EngineState.SHUTTING_DOWN)
         self._feed.stop()
         self._scheduler.stop()
+        if self._quote_writer is not None:
+            self._quote_writer.stop()
         if self._settings.flatten_on_shutdown:
             self._closer.execute(CloseMode.PANIC, "shutdown")
         else:

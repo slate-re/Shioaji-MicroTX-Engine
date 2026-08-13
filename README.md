@@ -33,6 +33,9 @@ Shioaji **原生沒有條件單 API**。官方文件提供的 `TouchOrder` 只�
 
 ## 核心功能
 
+另開終端機執行 `microtx watch` 可啟動唯讀監看畫面；此功能是獨立行程，需先安裝
+`pip install -e ".[tui]"`，且不提供任何下單或停止引擎的操作入口。
+
 ### 策略一：Scalp 觸價單
 
 指定**方向、觸發價、停利點數、停損點數**，引擎自動完成整個交易生命週期。
@@ -349,6 +352,33 @@ microtx panic      # 平掉所有部位並停機
 - **SSH 進去就能 `microtx panic`**，人不在電腦前也能止損
 
 安裝步驟與踩坑筆記見 [`docs/deployment.md`](docs/deployment.md)。
+
+---
+
+## 出問題的時候
+
+完整排查步驟見 [`docs/operations.md`](docs/operations.md)，以下是最常遇到的：
+
+| 症狀 | 處置 |
+|---|---|
+| `Sign data is timeout` | 系統時間沒自動同步：`sudo systemsetup -setusingnetworktime on` |
+| `Shioaji 登入失敗` | 檢查 API Key 的「行情/資料」「帳務」「交易」權限是否都勾了 |
+| `status` 顯示 **DEGRADED** | 引擎卡在共用鎖 → 立即 `microtx panic`（該路徑會以無鎖模式強制執行） |
+| `status` 顯示 **NO RESPONSE** | 行程僵住 → 先 `microtx panic`，無效再 `kill -9` 並到下單軟體確認部位 |
+| 啟動後直接 `HALTED` | 多半是 `daily_state.json` 損毀，風控狀態未知 → 見 operations.md |
+| 策略停在 `ENTRY_PENDING` | 委託被拒：`grep -E "拒絕\|Failed" logs/microtx.log` |
+| 新倉一直被拒 | 日誌會寫明是單日停損、交易次數、持倉上限還是節流 |
+
+```bash
+tail -f logs/microtx.log                          # 即時跟看
+grep -E "WARNING|ERROR|CRITICAL" logs/microtx.log # 只看要緊的
+```
+
+日誌**每日午夜輪替、保留 30 天**，且經 `SecretMaskingFilter` 遮蔽金鑰 ——
+可以安全地貼出來求助。
+
+> ⚠️ 任何情況下，**只要不確定部位狀態，就先到永豐下單軟體確認並手動平倉**。
+> 程式的問題可以慢慢查，裸露的部位不行。
 
 ---
 

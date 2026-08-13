@@ -35,6 +35,7 @@ class MarketFeed:
         symbol: str,
         queue_maxsize: int = 1000,
         drop_simtrade: bool = True,
+        capture_latest_tick: bool = False,
     ) -> None:
         """初始化行情來源。
 
@@ -43,6 +44,7 @@ class MarketFeed:
             symbol: 設定與訂閱使用的商品代碼。
             queue_maxsize: 行情佇列最大容量。
             drop_simtrade: 是否過濾試撮 tick。
+            capture_latest_tick: 是否以無鎖屬性保存最新行情供顯示快照使用。
 
         Raises:
             ValueError: 佇列容量小於 1。
@@ -52,6 +54,8 @@ class MarketFeed:
         self._gateway = gateway
         self._symbol = symbol
         self._drop_simtrade = drop_simtrade
+        self._capture_latest_tick = capture_latest_tick
+        self._latest_tick: TickEvent | None = None
         self._queue: queue.Queue[TickEvent] = queue.Queue(maxsize=queue_maxsize)
         self._stats_lock = Lock()
         self._lifecycle_lock = Lock()
@@ -114,6 +118,11 @@ class MarketFeed:
                 max_latency_ms=self._max_latency_ms,
             )
 
+    @property
+    def latest_tick(self) -> TickEvent | None:
+        """回傳顯示用途的最新行情；停用擷取時永遠為 None。"""
+        return self._latest_tick
+
     def _on_raw_tick(self, raw: RawTick) -> None:
         # 試撮必須先過濾，避免無效行情進入正規化與佇列路徑。
         if self._drop_simtrade and raw.simtrade:
@@ -122,6 +131,8 @@ class MarketFeed:
                 self._filtered_simtrade += 1
             return
         event = TickEvent.from_raw(raw, symbol=self._symbol)
+        if self._capture_latest_tick:
+            self._latest_tick = event
         self._enqueue(event)
 
     def _enqueue(self, event: TickEvent) -> None:

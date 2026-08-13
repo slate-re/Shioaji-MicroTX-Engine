@@ -67,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     flatten.add_argument("--yes", action="store_true", help="跳過人工確認")
     subparsers.add_parser("status", help="顯示引擎健康狀態")
     subparsers.add_parser("demo", help="免帳號重播離線行情範例")
+    watch = subparsers.add_parser("watch", help="啟動獨立唯讀監看介面")
+    watch.add_argument("--interval", type=float, default=0.25, help="刷新間隔秒數")
     return parser
 
 
@@ -95,6 +97,11 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         print("本版請使用 microtx run --strategy 啟動策略。", file=sys.stderr)
         return EXIT_USER_ERROR
     settings = Settings()
+    if command == "watch":
+        from microtx.tui.watch import watch
+
+        watch(settings, interval=float(args.interval))
+        return EXIT_OK
     if command == "run":
         return _run(args, settings)
     if command == "panic":

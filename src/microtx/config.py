@@ -129,6 +129,9 @@ class Settings(BaseSettings):
     status_write_interval_sec: float = Field(default=5.0, ge=1.0, le=60.0)
     daily_state_file: Path = Field(default=Path("runtime/daily_state.json"))
     trading_day_boundary: time = Field(default=time(6, 0))
+    enable_quote_snapshot: bool = Field(default=True)
+    quote_file: Path = Field(default=Path("runtime/quote.json"))
+    quote_write_interval_sec: float = Field(default=0.25, ge=0.05, le=5.0)
 
     # ------------------------------------------------------------------
     #  7. 日誌
