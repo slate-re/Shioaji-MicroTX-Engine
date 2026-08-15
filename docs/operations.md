@@ -75,12 +75,13 @@ IDLE ──arm()──> ARMED ──觸價──> ENTRY_PENDING ──成交─�
 
 ### 委託意圖（`OrderIntent`）
 
-| 意圖 | 送出方式 | 是否經過風控 |
-|---|---|---|
-| `ENTRY` | `MKP` + `IOC` | ✅ 全部規則 |
-| `TAKE_PROFIT` / `STOP_LOSS` | `MKP` + `IOC` | ✅（平倉單不受虧損上限阻擋） |
-| `FORCE_CLOSE` | `MKP` + `IOC` | ✅ |
-| `EMERGENCY` | `MKP` + `IOC` | ⛔ **完全繞過** |
+| 意圖 | 送出方式 | 可否選限價 | 是否經過風控 |
+|---|---|---|---|
+| `ENTRY` | `MKP+IOC` 或 `LMT+ROD` | ✅ `--entry-order` | ✅ 全部規則 |
+| `TAKE_PROFIT` | `MKP+IOC` 或 `LMT+ROD` | ✅ `--tp-order` | ✅（不受虧損上限阻擋） |
+| `STOP_LOSS` | `MKP+IOC` 或 `LMT+ROD` | ⚠️ `--sl-order` | ✅（不受虧損上限阻擋） |
+| `FORCE_CLOSE` | `MKP` + `IOC` | ❌ 固定 | ✅ |
+| `EMERGENCY` | `MKP+IOC`，或 `LMT+IOC` @ 漲跌停價 | ❌ 固定 | ⛔ **完全繞過** |
 
 策略啟動參數可用 `--entry-order`、`--tp-order`、`--sl-order` 分別選擇
 `market` 或 `limit`。`limit` 對應 `LMT + ROD`，其中停利與停損限價只允許搭配
