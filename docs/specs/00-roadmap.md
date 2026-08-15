@@ -17,6 +17,8 @@
 | 08 | [`08-cli-deploy.md`](08-cli-deploy.md) | `cli/`、`__main__.py`、`scripts/` | 06,07 | ✅ |
 | 09 | [`09-daily-state.md`](09-daily-state.md) | 🔒 交易日邊界修正 + 當日狀態持久化 | 05,08 | ✅ |
 | 10 | [`10-tui-watch.md`](10-tui-watch.md) | 👁 `microtx watch` 唯讀監看介面 | 08,09 | ✅ |
+| 11 | [`11-absolute-price-levels.md`](11-absolute-price-levels.md) | 絕對價格停利停損（`--tp-price` / `--sl-price`） | 04,08 | ✅ |
+| 12 | [`12-exit-order-type.md`](12-exit-order-type.md) | 三條腿各自選市價或限價（`--*-order`） | 11 | ✅ |
 
 ## 已完成（不要改動其公開介面）
 

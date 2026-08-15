@@ -1,14 +1,13 @@
 # Shioaji-MicroTX-Engine
 
 [![CI](https://github.com/slate-re/Shioaji-MicroTX-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/slate-re/Shioaji-MicroTX-Engine/actions/workflows/ci.yml)
-
-> 台指期（微台 TMF / 小台 MXF / 大台 TXF）**當沖自動條件單引擎**
-> 基於永豐金證券 [Shioaji API](https://sinotrade.github.io/zh/)，以 Python 實作。
-
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Mode: Simulation by default](https://img.shields.io/badge/mode-simulation%20by%20default-brightgreen)]()
+
+> 台指期（微台 TMF / 小台 MXF / 大台 TXF）**當沖自動條件單引擎**
+> 基於永豐金證券 [Shioaji API](https://sinotrade.github.io/zh/)，以多執行緒事件驅動架構實作。
 
 ---
 
@@ -31,121 +30,60 @@ Shioaji **原生沒有條件單 API**。官方文件提供的 `TouchOrder` 只�
 
 ---
 
-## 核心功能
+## 快速開始
 
-另開終端機執行 `microtx watch` 可啟動唯讀監看畫面；此功能是獨立行程，需先安裝
-`pip install -e ".[tui]"`，且不提供任何下單或停止引擎的操作入口。
-
-### 策略一：Scalp 觸價單
-
-指定**方向、觸發價、停利點數、停損點數**，引擎自動完成整個交易生命週期。
-
-也可直接指定固定出場價位：
+**免帳號、免網路、不需安裝券商 SDK**，三步驟看到完整交易生命週期：
 
 ```bash
-microtx run --strategy scalp --direction long --trigger 46500 \
-  --tp-price 46600 --sl-price 46400
+git clone https://github.com/slate-re/Shioaji-MicroTX-Engine.git
+cd Shioaji-MicroTX-Engine
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+microtx demo      # 重播行情，走完觸價 → 進場 → 停利 → 平倉
+pytest            # 385 個單元測試
 ```
 
-固定價位不會因跳空成交而移動停損；點數模式則維持以實際成交價計算出場價位。
-
-進場、停利與停損可分別選擇範圍市價或限價。限價出場僅適用於固定價位模式：
+要連線永豐（模擬或實盤）時才需要：
 
 ```bash
-microtx run --strategy scalp --direction long --trigger 46500 \
-  --tp-price 46600 --sl-price 46400 \
-  --entry-order limit --tp-order limit --sl-order market
+pip install -e ".[dev,live]"     # 加裝 shioaji SDK
+cp .env.example .env             # 填入 API Key，SIMULATION 保持 true
+chmod 600 .env
 ```
 
-三者預設皆為 `market`（`MKP + IOC`）。`limit` 會送出 `LMT + ROD`。
-**Scalp 與 OCO 都支援**，OCO 的多空兩腿共用同一組設定。
-
-### 委託方式一覽
-
-| 路徑 | 可否選限價 | 實際送出 |
-|---|---|---|
-| 進場 | ✅ `--entry-order` | `MKP+IOC`（預設）或 `LMT+ROD` @ 觸發價 |
-| 停利 | ✅ `--tp-order` | `MKP+IOC`（預設）或 `LMT+ROD` @ 停利價 |
-| 停損 | ⚠️ `--sl-order` | `MKP+IOC`（預設）或 `LMT+ROD` @ 停損價 |
-| 13:40 強制平倉 | ❌ | `MKP + IOC` |
-| `panic` / `flatten` | ❌ | `MKP+IOC`，或 `LMT+IOC` **掛在漲跌停價** |
-
-**下面兩列不受任何策略選項影響** —— 三條腿全設 `LIMIT` 時，強平與緊急平倉送出的
-仍是市價委託。
-
-緊急平倉唯一的設定是 `EMERGENCY_USE_MARKET_ORDER`，但**兩個選項都以「一定要成交」
-為前提**：`false` 時掛的是**漲停（買回）／跌停（賣出）**，成交順位等同市價，
-只是多一個硬性價格上限。你無法把它變成一張可能掛著不成交的被動限價單。
-
-> ⚠️ `--sl-order limit` 在快市穿價時可能不成交，讓部位持續裸露 ——
-> 這會把「有限的虧損」變成「無限的虧損」。啟動時會輸出 WARNING，
-> `microtx watch` 上也會標示 `SL:LIMIT`。沒有非常明確的理由，請維持預設。
->
-> 註：`MKP`（範圍市價）**本來就不是無上限的市價**，它有內建價格區間保護 ——
-> 預設值已經同時給你「會成交」與「滑價可控」。
-
-### 為什麼安全路徑不開放選擇
-
-可以開放的選擇與不能開放的選擇，界線在**「這個東西壞掉時誰來救」**。
-
-進場、停利、停損調錯了，還有強制平倉與 `panic` 兜底。
-但強平與 `panic` 本身就是最後一道 —— 後面沒有東西接住了。
-
-```
-方向 = 做多
-觸發價 = 23150      ← 價格「觸及」才進場，不預掛限價單
-停利 = 50 點        ← 成交價 +50 點自動平倉
-停損 = 30 點        ← 成交價 -30 點自動平倉
-```
-
-> **為什麼不預先掛限價單？**
-> 若現價 23100 就掛 23150 的買單，交易所會**立刻以 23100 成交**——
-> 你想在突破時追多，結果變成在低點就買進，條件完全沒被驗證。
-> 本引擎改為「監控行情 → 價格真正觸及 23150 → 才送出委託」。選擇
-> `--entry-order limit` 時也是觸價後才掛在觸發價，語意是突破就進但不追高。
-
-### 策略二：OCO 括號單
-
-同時武裝上下兩個觸發條件，**任一成交即自動撤銷另一邊**（One-Cancels-the-Other），
-適合區間突破或不預判方向的場景。
-
-### 🚨 立即平倉（Kill Switch）
-
-突發事件時的一鍵止損。引擎無頭常駐時，另開終端機（或 SSH 進去）即可觸發：
-
-```bash
-microtx panic      # 刪單 → 平倉 → 引擎停機，需人工重啟
-microtx flatten    # 刪單 → 平倉 → 引擎繼續待命，可重新武裝策略
-```
-
-三個關鍵設計，都是為了「**引擎自己出問題時這個開關仍然有效**」：
-
-1. **部位向券商重新查詢**，不信任引擎內部狀態 —— 狀態機卡死或不同步時照樣平得掉
-2. **先刪單、再平倉** —— 順序反了的話，平倉後殘留的進場單成交會讓你從空手變成反向持倉
-3. **繞過 RiskManager** —— 風控的「單日虧損停機」「交易次數上限」在緊急時會擋下救命的平倉單，
-   「因為虧太多所以不准你停損」是致命反模式
-
-實作上，CLI 透過 PID 檔送 `SIGUSR1` / `SIGUSR2`；訊號處理器只設一個 `Event`，
-真正的平倉由常駐的 `EmergencyWorker` 執行緒完成。同樣的 `EmergencyCloser.execute()`
-也是 13:40 強制平倉、單日停損停機、未預期例外的共用出口 —— 入口多個，核心邏輯只有一份。
-
-詳細流程與 15 項邊界情境見 [`docs/specs/06-emergency-close.md`](docs/specs/06-emergency-close.md)。
-
-### 風控（全套）
-
-- 單日最大虧損達標 → 引擎進入 `HALTED`，只准平倉不准開新倉
-- 同時最大持倉口數上限
-- 單日最大交易次數上限（防程式失控連續下單）
-- 下單節流（cooldown），防重複委託
-- **13:40 強制平倉**（日盤 13:45 收盤，預留 5 分鐘滑價餘裕）
-- 委託價格自動檢查是否落在 `limit_up` / `limit_down` 之間
-- 每 60 秒比對券商實際部位與引擎內部狀態，不一致即告警
+> 🔒 預設 `SIMULATION=true`。實盤需 `SIMULATION=false` **且** `ALLOW_LIVE_TRADING=true`
+> 兩道開關同時打開，並提供有效憑證 —— 缺一即拒絕啟動。
 
 ---
 
-## 架構
+## 常用指令
 
-### 資料流
+```bash
+# 觸價單：突破 46500 做多，停利 +50 點、停損 -30 點
+microtx run --strategy scalp --direction long --trigger 46500 --tp 50 --sl 30
+
+# 改用絕對價位（跳空成交時停損不會跟著滑走）
+microtx run --strategy scalp --direction long --trigger 46500 \
+    --tp-price 46600 --sl-price 46400
+
+# OCO 括號單：突破 46500 做多 / 跌破 46300 做空，先到先做
+microtx run --strategy oco --upper 46500 --lower 46300 --tp 50 --sl 30
+
+microtx status     # 引擎健康狀態
+microtx watch      # 唯讀監看畫面（獨立行程，需 pip install -e ".[tui]"）
+
+# 🚨 緊急處置（另開終端機或 SSH）
+microtx flatten    # 刪單 + 平倉，引擎待命
+microtx panic      # 刪單 + 平倉 + 引擎停機
+```
+
+進場、停利、停損可各自選擇 `--entry-order` / `--tp-order` / `--sl-order`
+（`market` 或 `limit`），詳見 [`docs/operations.md`](docs/operations.md) 的委託意圖對照表。
+
+---
+
+## 核心設計
 
 ```mermaid
 flowchart LR
@@ -160,7 +98,7 @@ flowchart LR
     end
 
     subgraph STRAT["strategies/ 策略層（純邏輯）"]
-        SC["ScalpStrategy<br/>穿越判定 + 點數 TP/SL"]
+        SC["ScalpStrategy<br/>穿越判定 + TP/SL"]
         OCO["OcoStrategy"]
     end
 
@@ -194,203 +132,64 @@ flowchart LR
 三個關鍵設計，圖上都看得到：
 
 1. **行情 callback 只做過濾與入佇列** —— 佇列有界且丟舊留新，行情執行緒永不阻塞
-2. **策略層只吐 `Signal`，不下單** —— 因此無 I/O、無執行緒，可 100% 單元測試
-3. **緊急平倉走粗線那條路** —— 直接向券商查部位、繞過 `RiskManager`。
-   因為風控的「單日虧損停機」會擋下救命的平倉單，那是致命反模式
-
-### 分層細節
-
-```
-                          ┌─────────────────────────────┐
-                          │        Shioaji API          │
-                          │   (模擬 / 正式，由設定切換)   │
-                          └──────┬───────────────┬──────┘
-                     行情 Tick   │               │  委託/成交回報
-                                 ▼               ▼
-   ┌──────────────────────────────────────────────────────────────┐
-   │                    broker/ 券商閘道層                          │
-   │  BrokerGateway (ABC) ── ShioajiGateway ── PaperGateway        │
-   │  · 隔離 SDK，策略層零依賴  · PaperGateway 免帳號即可 Demo/測試   │
-   └──────┬──────────────────────────────────────────┬────────────┘
-          │ 正規化 Tick                                │ 委託指令
-          ▼                                           │
-   ┌─────────────────────────┐                        │
-   │   market/ 行情層         │                        │
-   │  · simtrade 試撮過濾     │                        │
-   │  · Tick 正規化           │                        │
-   │  · 事件佇列（不阻塞 CB）  │                        │
-   └──────────┬──────────────┘                        │
-              │ TickEvent                             │
-              ▼                                       │
-   ┌─────────────────────────┐                        │
-   │  strategies/ 策略層      │                        │
-   │  · ScalpStrategy         │                        │
-   │  · OcoStrategy           │                        │
-   │  （純函式邏輯，易測試）    │                        │
-   └──────────┬──────────────┘                        │
-              │ Signal                                │
-              ▼                                       │
-   ┌──────────────────────────────────────────────────┴────────────┐
-   │                      engine/ 引擎層                             │
-   │  RiskManager ─→ OrderRouter ─→ PositionTracker ─→ Scheduler    │
-   │  風控閘門       下單/改/刪+重試   部位與損益        時段/強平       │
-   │       ▲            ▲                                            │
-   │       │            │  submit_unchecked()                        │
-   │    ⛔繞過 ─────────┘                                            │
-   │  🚨 EmergencyCloser ← SIGUSR1/2 ← microtx panic / flatten       │
-   │       · 直查券商部位，不依賴內部狀態                              │
-   │       · 先刪單再平倉，MKP + IOC                                  │
-   │                                                                 │
-   │            TradingEngine（主協調器，狀態機）                      │
-   └────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-                   utils/ 日誌（含機密遮蔽） · notify/ 通知
-```
+2. **策略層只吐 `Signal`，不下單** —— 因此無 I/O、無執行緒，可 100% 單元測試與離線重播
+3. **緊急平倉走粗線那條路** —— 直接向券商查部位、**繞過** `RiskManager`
 
 > 完整分層職責、介面契約與執行緒模型見 [`docs/architecture.md`](docs/architecture.md)。
 
-### 資料流：一次完整的 Scalp 交易
+### 為什麼不預先掛限價單
 
-```
-1. 使用者設定    方向/觸發價/停利點/停損點  →  StrategyState.ARMED
-2. Tick 進來     過濾 simtrade → 正規化 → 佇列
-3. 穿越判定      close >= trigger（多單）    →  ENTRY_PENDING
-4. 風控閘門      部位/次數/時段/單日損益檢查   →  通過才放行
-5. 送出委託      MKP + IOC + DayTrade
-6. 成交回報      記錄成交均價                 →  IN_POSITION
-7. 持倉監控      每 tick 檢查停利/停損價位     →  EXIT_PENDING
-8. 平倉成交      更新當日損益、寫日誌          →  CLOSED
-   ── 或 13:40 到 → 強制平倉 ──
-```
+若現價 46300 就掛 46500 的買單，交易所會**立刻以 46300 成交** ——
+你想在突破時追多，結果變成在低點就買進，條件完全沒被驗證。
+
+本引擎改為「監控行情 → 價格真正觸及 46500 → 才送出委託」。
 
 ---
 
-## 目錄結構
+## 🚨 立即平倉（Kill Switch）
 
-```
-Shioaji-MicroTX-Engine/
-├── src/microtx/
-│   ├── __init__.py
-│   ├── __main__.py              # CLI 進入點（python -m microtx）
-│   ├── config.py                # ✅ 設定管理（pydantic-settings，機密遮蔽、雙開關防呆）
-│   ├── contracts.py             # ✅ 商品規格表（TXF/MXF/TMF 每點價值換算）
-│   ├── enums.py                 # ✅ Direction / StrategyState / EngineState ...
-│   │
-│   ├── broker/                  # 券商閘道層（隔離 Shioaji SDK）
-│   │   ├── base.py              #    BrokerGateway 抽象介面
-│   │   ├── shioaji_gateway.py   #    真實 Shioaji 實作
-│   │   └── paper_gateway.py     #    純本地模擬，免帳號可跑
-│   │
-│   ├── market/                  # 行情層
-│   │   ├── tick.py              #    正規化 Tick 資料結構
-│   │   └── feed.py              #    訂閱管理 + simtrade 過濾 + 事件佇列
-│   │
-│   ├── strategies/              # 策略層
-│   │   ├── base.py              #    Strategy 抽象基底 + 狀態機
-│   │   ├── scalp.py             #    觸價進場 + 點數停利停損
-│   │   └── oco.py               #    OCO 括號單
-│   │
-│   ├── engine/                  # 引擎層
-│   │   ├── order_router.py      #    下單/改單/刪單 + 重試 + 冪等保護
-│   │   ├── position.py          #    部位、均價、當日損益追蹤
-│   │   ├── risk.py              #    RiskManager 風控閘門
-│   │   ├── scheduler.py         #    交易時段判定 + 強制平倉排程
-│   │   ├── emergency.py         # 🚨 EmergencyCloser 立即平倉
-│   │   └── engine.py            #    TradingEngine 主協調器
-│   │
-│   ├── cli/                     # CLI：run / scalp / oco / panic / flatten / demo
-│   ├── notify/                  # 通知層（Telegram / Console）
-│   └── utils/
-│       ├── logger.py            # ✅ 日誌（雙通道 + 機密遮蔽 Filter）
-│       ├── pidfile.py           #    PID 檔管理（kill switch 靠它找到行程）
-│       └── retry.py             #    指數退避重試裝飾器
-│
-├── tests/                       # pytest 單元測試
-├── docs/
-│   ├── architecture.md          # ✅ 架構總綱：分層、介面契約、執行緒模型
-│   ├── shioaji_guide.md         # ✅ Shioaji API 在地化速查（開發時只需看這份）
-│   └── specs/                   # ✅ 分模組實作任務單（01–08）
-├── scripts/                     # 部署腳本（launchd plist、安裝、健康檢查）
-├── AGENTS.md                    # ✅ AI 編碼代理的專案規範
-├── .env.example                 # ✅ 環境變數範本
-├── .gitignore                   # ✅ 排除 .env / *.pfx / *.log / runtime/
-├── .pre-commit-config.yaml      # ✅ gitleaks 機密掃描 + ruff + mypy
-└── pyproject.toml               # ✅ 依賴、ruff、mypy、pytest 設定
+引擎無頭常駐時，另開終端機（或 SSH 進去）即可觸發：
+
+```bash
+microtx panic      # 刪單 → 平倉 → 引擎停機，需人工重啟
+microtx flatten    # 刪單 → 平倉 → 引擎繼續待命
 ```
 
-✅ = 已完成　其餘為規劃中模組（規格已定稿，見 [`docs/specs/00-roadmap.md`](docs/specs/00-roadmap.md)）
+三個關鍵設計，都是為了「**引擎自己出問題時這個開關仍然有效**」：
+
+1. **部位向券商重新查詢**，不信任引擎內部狀態 —— 狀態機卡死或不同步時照樣平得掉
+2. **先刪單、再平倉** —— 順序反了的話，平倉後殘留的進場單成交會讓你從空手變成反向持倉
+3. **繞過 RiskManager** —— 風控的「單日虧損停機」在緊急時會擋下救命的平倉單，
+   「因為虧太多所以不准你停損」是致命反模式
+
+CLI 透過 PID 檔送 `SIGUSR1` / `SIGUSR2`；訊號處理器只設一個 `Event`，真正的平倉由
+常駐的 `EmergencyWorker` 執行緒完成。13:40 強制平倉、單日停損停機、未預期例外
+共用同一個 `EmergencyCloser.execute()` —— 入口多個，核心邏輯只有一份。
+
+流程與邊界情境見 [`docs/specs/06-emergency-close.md`](docs/specs/06-emergency-close.md)。
+
+### 哪些選擇可以開放，哪些不行
+
+界線在**「這個東西壞掉時誰來救」**。
+
+| 路徑 | 可否選限價 |
+|---|---|
+| 進場 / 停利 / 停損 | ✅ 調錯了還有強平與 `panic` 兜底 |
+| 13:40 強制平倉 | ❌ |
+| `panic` / `flatten` | ❌ |
+
+強平與 `panic` 本身就是最後一道 —— 後面沒有東西接住了。
+即使三條腿全設 `LIMIT`，它們送出的仍是市價委託。
 
 ---
 
-## 安裝與設定
+## 風控
 
-### 1. 取得程式碼
-
-```bash
-git clone https://github.com/<your-account>/Shioaji-MicroTX-Engine.git
-cd Shioaji-MicroTX-Engine
-```
-
-### 2. 建立虛擬環境
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-### 3. 設定環境變數
-
-```bash
-cp .env.example .env
-```
-
-編輯 `.env`，填入 [永豐 API 金鑰](https://sinotrade.github.io/zh/tutor/prepare/token/)：
-
-```dotenv
-SHIOAJI_API_KEY=your_api_key
-SHIOAJI_SECRET_KEY=your_secret_key
-SIMULATION=true          # 預設模擬模式
-SYMBOL=TMFR1             # TMFR1 微台 / MXFR1 小台 / TXFR1 大台
-```
-
-### 4. 啟用提交前檢查（建議）
-
-```bash
-pre-commit install
-```
-
-安裝後每次 `git commit` 會自動執行 **gitleaks 機密掃描**，
-金鑰誤入版控會直接被擋下。
-
-### 5. 執行測試
-
-```bash
-pytest
-```
-
----
-
-## 使用方式
-
-```bash
-# 離線 Demo：無需永豐帳號、無需 .env，重播 tick 完整跑一輪策略
-microtx demo
-
-# 模擬模式：做多，23150 觸發，停利 50 點，停損 30 點
-microtx run --strategy scalp --direction long --trigger 23150 --tp 50 --sl 30
-
-# OCO：向上 23200 做多 / 向下 23050 做空，先到先做，另一邊自動撤銷
-microtx run --strategy oco --upper 23200 --lower 23050 --tp 50 --sl 30
-
-# 查看引擎狀態
-microtx status
-
-# 🚨 緊急情況（另開終端機 / SSH）
-microtx flatten    # 平掉所有部位，引擎待命
-microtx panic      # 平掉所有部位並停機
-```
+- 單日最大虧損達標 → 引擎進入 `HALTED`，只准平倉不准開新倉
+- 單日累計損益與交易次數**跨重啟持久化** —— 崩潰重啟不會讓停損上限歸零
+- 同時最大持倉口數、單日最大交易次數、下單節流
+- **13:40 強制平倉**（日盤 13:45 收盤，預留 5 分鐘滑價餘裕）
+- 每 60 秒比對券商實際部位與引擎內部狀態，不一致即告警
 
 ---
 
@@ -405,47 +204,56 @@ microtx panic      # 平掉所有部位並停機
 
 安裝步驟與踩坑筆記見 [`docs/deployment.md`](docs/deployment.md)。
 
+### 平台支援
+
+| 功能 | macOS / Linux | Windows |
+|---|---|---|
+| `microtx demo`、單元測試 | ✅ | ✅ |
+| 引擎常駐、`panic` / `flatten` | ✅ | ❌ |
+
+Kill switch 依賴 Unix 訊號（`SIGUSR1` / `SIGUSR2`），Windows 的 Python 沒有這兩個訊號。
+
 ---
 
 ## 出問題的時候
-
-完整排查步驟見 [`docs/operations.md`](docs/operations.md)，以下是最常遇到的：
-
-| 症狀 | 處置 |
-|---|---|
-| `Sign data is timeout` | 系統時間沒自動同步：`sudo systemsetup -setusingnetworktime on` |
-| `Shioaji 登入失敗` | 檢查 API Key 的「行情/資料」「帳務」「交易」權限是否都勾了 |
-| `status` 顯示 **DEGRADED** | 引擎卡在共用鎖 → 立即 `microtx panic`（該路徑會以無鎖模式強制執行） |
-| `status` 顯示 **NO RESPONSE** | 行程僵住 → 先 `microtx panic`，無效再 `kill -9` 並到下單軟體確認部位 |
-| 啟動後直接 `HALTED` | 多半是 `daily_state.json` 損毀，風控狀態未知 → 見 operations.md |
-| 策略停在 `ENTRY_PENDING` | 委託被拒：`grep -E "拒絕\|Failed" logs/microtx.log` |
-| 新倉一直被拒 | 日誌會寫明是單日停損、交易次數、持倉上限還是節流 |
 
 ```bash
 tail -f logs/microtx.log                          # 即時跟看
 grep -E "WARNING|ERROR|CRITICAL" logs/microtx.log # 只看要緊的
 ```
 
-日誌**每日午夜輪替、保留 30 天**，且經 `SecretMaskingFilter` 遮蔽金鑰 ——
-可以安全地貼出來求助。
+| 症狀 | 處置 |
+|---|---|
+| `Sign data is timeout` | 系統時間沒同步：`sudo systemsetup -setusingnetworktime on` |
+| `status` 說「卡在共用鎖上」（退出碼 3） | 立即 `microtx panic` —— 緊急平倉會以無鎖模式強制執行 |
+| `status` 說「引擎無回應」（退出碼 2） | 行程僵住 → 先 `panic`，無效再 `kill -9` 並到下單軟體確認部位 |
+| 啟動後直接 `HALTED` | 多半是 `daily_state.json` 損毀，風控狀態未知 |
+
+完整排查（登入、執行、交易三類）見 [`docs/operations.md`](docs/operations.md)。
+
+日誌每日午夜輪替、保留 30 天，且經 `SecretMaskingFilter` 遮蔽金鑰 —— 可以安全貼出求助。
 
 > ⚠️ 任何情況下，**只要不確定部位狀態，就先到永豐下單軟體確認並手動平倉**。
 > 程式的問題可以慢慢查，裸露的部位不行。
 
 ---
 
-## 開發規範
+## 專案結構
 
-| 項目 | 工具 | 指令 |
-|---|---|---|
-| 格式化 / Lint | ruff | `ruff format . && ruff check --fix .` |
-| 型別檢查 | mypy (strict) | `mypy src` |
-| 測試 | pytest | `pytest --cov=microtx` |
-| 機密掃描 | gitleaks | `pre-commit run --all-files` |
+```
+src/microtx/
+├── broker/       券商閘道層（唯一 import shioaji 的地方；含免帳號的 PaperGateway）
+├── market/       行情層（simtrade 過濾 + 有界佇列）
+├── strategies/   策略層（純邏輯，零 I/O）
+├── engine/       風控 / 下單路由 / 部位 / 排程 / 緊急平倉 / 主協調器
+├── cli/          run · status · watch · panic · flatten · demo
+├── tui/          唯讀監看介面（獨立行程）
+└── utils/        日誌（機密遮蔽）· PID 檔 · 重試
 
-- 全面採用 **Type Hints**，`mypy --strict` 零錯誤
-- 註解與 docstring 使用**繁體中文**
-- 商業邏輯（穿越判定、損益計算、風控閘門）必須有對應單元測試
+tests/            385 個單元測試（核心模組覆蓋率 94%，不含需 SDK 的 gateway）
+docs/             架構總綱 · Shioaji 速查 · 部署 · 運維 · 分模組規格
+scripts/          launchd plist · 安裝 · 健康檢查
+```
 
 ---
 
@@ -453,13 +261,28 @@ grep -E "WARNING|ERROR|CRITICAL" logs/microtx.log # 只看要緊的
 
 | 面向 | 措施 |
 |---|---|
-| 金鑰管理 | 全部由環境變數注入，程式碼零硬編碼 |
-| 版控隔離 | `.gitignore` 排除 `.env`、`*.pfx`、`*.pem`、`*.log`、`logs/`、`data/` |
+| 金鑰管理 | 全部由環境變數注入，程式碼零硬編碼；`SecretStr` 讓 `repr()` 自動遮蔽 |
+| 版控隔離 | `.gitignore` 排除 `.env`、`*.pfx`、`*.log`、`logs/`、`runtime/` |
 | 提交攔截 | pre-commit + gitleaks + `detect-private-key` |
-| 記憶體保護 | 金鑰以 `SecretStr` 儲存，`repr()` / `str()` 自動遮蔽 |
 | 日誌保護 | `SecretMaskingFilter` 攔截疑似金鑰字串，寫檔前遮蔽 |
-| 實盤防呆 | 需 `SIMULATION=false` **且** `ALLOW_LIVE_TRADING=true` 兩道開關同時打開 |
-| 憑證檢查 | 實盤模式啟動時驗證憑證檔存在，缺少即拒絕啟動 |
+| 實盤防呆 | 需 `SIMULATION=false` **且** `ALLOW_LIVE_TRADING=true`，並驗證憑證存在 |
+| 委託保護 | 強平與緊急平倉固定 `MKP + IOC`，兼顧「必成交」與「滑價可控」 |
+
+---
+
+## 開發
+
+```bash
+ruff format --check src tests && ruff check src tests   # 格式與 Lint
+mypy src                                                # 型別檢查（strict）
+pytest --cov=microtx                                    # 測試與覆蓋率
+pre-commit run --all-files                              # 含 gitleaks 機密掃描
+```
+
+- 全面 Type Hints，`mypy --strict` 零錯誤
+- 註解與 docstring 使用繁體中文
+- CI 在 Python 3.10 / 3.11 雙版本執行，且**刻意不安裝 `live` extra** ——
+  持續驗證「未安裝券商 SDK 時全套測試與 Demo 仍可運行」
 
 ---
 
@@ -471,6 +294,8 @@ API 整合、狀態機設計與軟體工程實務，**不構成任何投資建�
 - 期貨為**高槓桿商品**，可能在極短時間內造成超過本金的損失。
 - 程式交易存在**軟體缺陷、網路延遲、行情中斷、API 變更、憑證失效**等風險，
   自動化並不降低市場風險，反而可能因失控而放大損失。
+- 本引擎的停損是**應用層**的，不是掛在券商端的條件單 ——
+  引擎未運行時（斷電、斷網、程式崩潰）**停損不會執行**。
 - 模擬環境的成交為模擬撮合，**與實盤成交結果必然存在差異**，
   模擬獲利不代表實盤可複製。
 - 使用本程式進行任何真實交易所產生的**一切盈虧與法律責任，概由使用者自行承擔**，
@@ -481,12 +306,14 @@ API 整合、狀態機設計與軟體工程實務，**不構成任何投資建�
 
 ---
 
+## 延伸文件
+
+- [架構總綱：分層、介面契約、執行緒模型](docs/architecture.md)
+- [Shioaji API 在地化速查](docs/shioaji_guide.md)
+- [無人值守部署與 launchd 設定](docs/deployment.md)
+- [運維手冊：狀態對照、日誌、疑難排解](docs/operations.md)
+- [分模組實作規格](docs/specs/00-roadmap.md)
+
 ## 授權
 
 [MIT License](LICENSE)
-
-## 參考資料
-
-- [Shioaji 官方文件](https://sinotrade.github.io/zh/)
-- [本專案在地化速查表](docs/shioaji_guide.md)
-- [臺灣期貨交易所 — 臺股期貨契約規格](https://www.taifex.com.tw/)
