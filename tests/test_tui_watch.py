@@ -14,7 +14,7 @@ import pytest
 from microtx.cli.commands import main
 from microtx.config import Settings
 from microtx.exceptions import MicroTXError
-from microtx.tui.watch import (
+from microtx.tui.dashboard import (
     _line_loop,
     _plain_text,
     _read_json,
@@ -103,7 +103,7 @@ def test_five_health_states(
         degraded=degraded,
         connected=connected,
     )
-    mocker.patch("microtx.tui.watch.PidFile.read_pid", return_value=pid)
+    mocker.patch("microtx.tui.dashboard.PidFile.read_pid", return_value=pid)
     snapshot = read_snapshot(settings, now=_NOW)
     assert snapshot.health == expected
     if expected == "DEGRADED":
@@ -113,7 +113,7 @@ def test_five_health_states(
 def test_displayed_time_comes_from_status_not_local_clock(mocker, tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     _write_snapshots(settings, written_at=_NOW)
-    mocker.patch("microtx.tui.watch.PidFile.read_pid", return_value=123)
+    mocker.patch("microtx.tui.dashboard.PidFile.read_pid", return_value=123)
     first = read_snapshot(settings, now=_NOW)
     later = read_snapshot(settings, now=_NOW + timedelta(seconds=10))
     assert first.displayed_time == later.displayed_time == "10:30:00"
@@ -122,7 +122,7 @@ def test_displayed_time_comes_from_status_not_local_clock(mocker, tmp_path: Path
 def test_missing_price_displays_placeholder(mocker, tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     _write_snapshots(settings, price=None)
-    mocker.patch("microtx.tui.watch.PidFile.read_pid", return_value=123)
+    mocker.patch("microtx.tui.dashboard.PidFile.read_pid", return_value=123)
     assert "價格 --" in _plain_text(read_snapshot(settings, now=_NOW), compact=True)
 
 
@@ -143,7 +143,7 @@ def test_unrealized_returns_none_for_missing_or_flat_position() -> None:
 def test_narrow_terminal_uses_multiline_text(mocker, tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     _write_snapshots(settings)
-    mocker.patch("microtx.tui.watch.PidFile.read_pid", return_value=123)
+    mocker.patch("microtx.tui.dashboard.PidFile.read_pid", return_value=123)
     assert "\n" in _plain_text(read_snapshot(settings, now=_NOW), compact=True)
 
 
@@ -182,9 +182,9 @@ def test_watch_rejects_invalid_interval(tmp_path: Path) -> None:
 
 def test_non_tty_watch_uses_line_mode(mocker, tmp_path: Path) -> None:
     settings = _settings(tmp_path)
-    mocker.patch("microtx.tui.watch._require_rich")
-    mocker.patch("microtx.tui.watch.sys.stdout.isatty", return_value=False)
-    line_loop = mocker.patch("microtx.tui.watch._line_loop")
+    mocker.patch("microtx.tui.dashboard._require_rich")
+    mocker.patch("microtx.tui.dashboard.sys.stdout.isatty", return_value=False)
+    line_loop = mocker.patch("microtx.tui.dashboard._line_loop")
     watch(settings, interval=0.5)
     line_loop.assert_called_once_with(settings, interval=0.5)
 
@@ -192,8 +192,8 @@ def test_non_tty_watch_uses_line_mode(mocker, tmp_path: Path) -> None:
 def test_line_mode_prints_snapshot_once(mocker, tmp_path: Path, capsys) -> None:
     settings = _settings(tmp_path)
     _write_snapshots(settings)
-    mocker.patch("microtx.tui.watch.PidFile.read_pid", return_value=123)
-    mocker.patch("microtx.tui.watch.time.sleep", side_effect=KeyboardInterrupt)
+    mocker.patch("microtx.tui.dashboard.PidFile.read_pid", return_value=123)
+    mocker.patch("microtx.tui.dashboard.time.sleep", side_effect=KeyboardInterrupt)
     with pytest.raises(KeyboardInterrupt):
         _line_loop(settings, interval=0.1)
     output = capsys.readouterr().out

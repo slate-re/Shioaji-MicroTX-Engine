@@ -18,7 +18,7 @@ from microtx.broker.base import FillEvent, OrderRequest, RawTick, new_client_id
 from microtx.broker.paper_gateway import PaperGateway
 from microtx.config import PROJECT_ROOT, Settings
 from microtx.engine.engine import TradingEngine
-from microtx.enums import Direction, PriceType, TimeInForce
+from microtx.enums import Direction, ExecutionStyle, PriceType, TimeInForce
 from microtx.exceptions import MicroTXError
 from microtx.market.tick import TickEvent
 from microtx.strategies.base import Signal
@@ -53,6 +53,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--lower", type=float)
     run.add_argument("--tp", type=int)
     run.add_argument("--sl", type=int)
+    run.add_argument("--tp-price", type=float)
+    run.add_argument("--sl-price", type=float)
+    run.add_argument("--long-tp-price", type=float)
+    run.add_argument("--long-sl-price", type=float)
+    run.add_argument("--short-tp-price", type=float)
+    run.add_argument("--short-sl-price", type=float)
+    for flag in ("entry", "tp", "sl"):
+        run.add_argument(
+            f"--{flag}-order",
+            choices=("market", "limit"),
+            default="market",
+        )
 
     for name in ("scalp", "oco"):
         subparsers.add_parser(name, help="本版請改用 run --strategy 啟動策略")
@@ -98,7 +110,7 @@ def _dispatch(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         return EXIT_USER_ERROR
     settings = Settings()
     if command == "watch":
-        from microtx.tui.watch import watch
+        from microtx.tui.dashboard import watch
 
         watch(settings, interval=float(args.interval))
         return EXIT_OK
@@ -119,6 +131,14 @@ def _run(args: argparse.Namespace, settings: Settings) -> int:
     if settings.is_live and not _confirm_live(bool(args.yes)):
         print("未取得實盤確認，拒絕啟動。", file=sys.stderr)
         return EXIT_USER_ERROR
+    strategy = _strategy_from_args(args, settings)
+    if strategy is not None and getattr(args, "sl_order", "market") == "limit":
+        print(
+            f"WARNING: ⚠️ 停損採限價委託（{strategy.describe() if strategy else ''}）。"
+            "快市穿價時可能不成交，部位將持續裸露；"
+            "建議改用 --sl-order market（範圍市價，滑價有上限）。",
+            file=sys.stderr,
+        )
     from microtx.broker.shioaji_gateway import ShioajiGateway
 
     if bool(args.reset_daily_state):
@@ -127,7 +147,6 @@ def _run(args: argparse.Namespace, settings: Settings) -> int:
         DailyStateStore(settings.daily_state_file, boundary=settings.trading_day_boundary).clear()
 
     engine = TradingEngine(settings, ShioajiGateway(settings), notifier=None)
-    strategy = _strategy_from_args(args, settings)
     if strategy is not None:
         strategy.arm()
         engine.add_strategy(strategy)
@@ -149,18 +168,28 @@ def _strategy_from_args(
 ) -> ScalpStrategy | OcoStrategy | None:
     if args.strategy is None:
         return None
-    if args.tp is None or args.sl is None:
-        raise ValueError("策略必須提供 --tp 與 --sl")
+    entry_style = ExecutionStyle(str(args.entry_order).upper())
+    take_profit_style = ExecutionStyle(str(args.tp_order).upper())
+    stop_loss_style = ExecutionStyle(str(args.sl_order).upper())
     if args.strategy == "scalp":
         if args.direction is None or args.trigger is None:
             raise ValueError("scalp 必須提供 --direction 與 --trigger")
+        if args.tp is not None and args.tp_price is not None:
+            raise ValueError("--tp 與 --tp-price 只能擇一")
+        if args.sl is not None and args.sl_price is not None:
+            raise ValueError("--sl 與 --sl-price 只能擇一")
         return ScalpStrategy(
             spec=settings.spec,
             direction=Direction.LONG if args.direction == "long" else Direction.SHORT,
             trigger_price=args.trigger,
             take_profit_points=args.tp,
             stop_loss_points=args.sl,
+            take_profit_price=args.tp_price,
+            stop_loss_price=args.sl_price,
             quantity=settings.order_quantity,
+            entry_style=entry_style,
+            take_profit_style=take_profit_style,
+            stop_loss_style=stop_loss_style,
         )
     if args.upper is None or args.lower is None:
         raise ValueError("oco 必須提供 --upper 與 --lower")
@@ -170,7 +199,14 @@ def _strategy_from_args(
         lower_trigger=args.lower,
         take_profit_points=args.tp,
         stop_loss_points=args.sl,
+        long_take_profit_price=args.long_tp_price,
+        long_stop_loss_price=args.long_sl_price,
+        short_take_profit_price=args.short_tp_price,
+        short_stop_loss_price=args.short_sl_price,
         quantity=settings.order_quantity,
+        entry_style=entry_style,
+        take_profit_style=take_profit_style,
+        stop_loss_style=stop_loss_style,
     )
 
 

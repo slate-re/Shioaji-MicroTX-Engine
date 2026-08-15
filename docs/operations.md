@@ -82,6 +82,15 @@ IDLE ──arm()──> ARMED ──觸價──> ENTRY_PENDING ──成交─�
 | `FORCE_CLOSE` | `MKP` + `IOC` | ✅ |
 | `EMERGENCY` | `MKP` + `IOC` | ⛔ **完全繞過** |
 
+策略啟動參數可用 `--entry-order`、`--tp-order`、`--sl-order` 分別選擇
+`market` 或 `limit`。`limit` 對應 `LMT + ROD`，其中停利與停損限價只允許搭配
+固定的絕對價格模式；點數模式仍使用範圍市價。`FORCE_CLOSE` 與 `EMERGENCY`
+是安全裝置，無論策略設定為何都固定送出 `MKP + IOC`。
+
+⚠️ `--sl-order limit` 可能在快市穿價後無法成交，讓部位持續裸露。引擎啟動時會
+輸出 WARNING，策略摘要也會標示 `SL:LIMIT`；若沒有非常明確的理由，請維持預設
+`--sl-order market`。
+
 ---
 
 ## 2. 查看日誌

@@ -89,6 +89,16 @@ class TimeInForce(str, Enum):
     FOK = "FOK"
 
 
+class ExecutionStyle(str, Enum):
+    """出場或進場委託的送出方式。"""
+
+    MARKET = "MARKET"
+    """範圍市價（MKP）加 IOC；為本專案預設。"""
+
+    LIMIT = "LIMIT"
+    """限價（LMT）加 ROD；價格明確但可能不成交。"""
+
+
 class CloseMode(str, Enum):
     """緊急平倉語意。"""
 

@@ -8,8 +8,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from microtx.cli.commands import main
+from microtx.cli.commands import _strategy_from_args, build_parser, main
 from microtx.config import Settings
+from microtx.strategies.oco import OcoStrategy
 
 _TAIPEI = ZoneInfo("Asia/Taipei")
 
@@ -56,6 +57,54 @@ def test_live_run_without_confirmation_is_rejected(mocker, monkeypatch) -> None:
     assert main(["run"]) == 2
 
 
+def test_scalp_cli_rejects_mixed_take_profit_modes(capsys) -> None:
+    result = main(
+        [
+            "run",
+            "--strategy",
+            "scalp",
+            "--direction",
+            "long",
+            "--trigger",
+            "46500",
+            "--tp",
+            "50",
+            "--tp-price",
+            "46600",
+            "--sl-price",
+            "46400",
+        ]
+    )
+    assert result == 2
+    assert "只能擇一" in capsys.readouterr().err
+
+
+def test_oco_cli_builds_four_independent_absolute_levels() -> None:
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--strategy",
+            "oco",
+            "--upper",
+            "46500",
+            "--lower",
+            "46300",
+            "--long-tp-price",
+            "46600",
+            "--long-sl-price",
+            "46450",
+            "--short-tp-price",
+            "46200",
+            "--short-sl-price",
+            "46350",
+        ]
+    )
+    strategy = _strategy_from_args(args, Settings(_env_file=None))
+    assert isinstance(strategy, OcoStrategy)
+    assert strategy._long.stop_price == 46_450.0
+    assert strategy._short.stop_price == 46_350.0
+
+
 def _status_payload(written_at: datetime, *, degraded: bool = False) -> dict[str, object]:
     return {
         "written_at": written_at.isoformat(),
@@ -91,3 +140,86 @@ def test_status_reports_healthy_degraded_and_stale(mocker, tmp_path: Path, capsy
     )
     assert main(["status"]) == 2
     assert "無回應" in capsys.readouterr().err
+
+
+def test_cli_builds_independent_execution_styles() -> None:
+    from microtx.enums import ExecutionStyle
+
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--strategy",
+            "scalp",
+            "--direction",
+            "long",
+            "--trigger",
+            "46500",
+            "--tp-price",
+            "46600",
+            "--sl-price",
+            "46400",
+            "--entry-order",
+            "limit",
+            "--tp-order",
+            "limit",
+        ]
+    )
+    strategy = _strategy_from_args(args, Settings(_env_file=None))
+    assert strategy is not None
+    assert strategy._entry_style is ExecutionStyle.LIMIT
+    assert strategy._take_profit_style is ExecutionStyle.LIMIT
+    assert strategy._stop_loss_style is ExecutionStyle.MARKET
+
+
+def test_cli_rejects_invalid_execution_style(capsys) -> None:
+    import pytest
+
+    with pytest.raises(SystemExit) as raised:
+        build_parser().parse_args(["run", "--entry-order", "iceberg"])
+    assert raised.value.code == 2
+    error = capsys.readouterr().err
+    assert "market" in error
+    assert "limit" in error
+
+
+def test_panic_and_flatten_expose_no_execution_style_switches() -> None:
+    panic = build_parser().parse_args(["panic", "--yes"])
+    flatten = build_parser().parse_args(["flatten", "--yes"])
+    assert not hasattr(panic, "entry_order")
+    assert not hasattr(panic, "tp_order")
+    assert not hasattr(panic, "sl_order")
+    assert not hasattr(flatten, "entry_order")
+    assert not hasattr(flatten, "tp_order")
+    assert not hasattr(flatten, "sl_order")
+
+
+def test_limit_stop_prints_startup_warning(mocker, capsys) -> None:
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--strategy",
+            "scalp",
+            "--direction",
+            "long",
+            "--trigger",
+            "46500",
+            "--tp-price",
+            "46600",
+            "--sl-price",
+            "46400",
+            "--sl-order",
+            "limit",
+        ]
+    )
+    settings = Settings(_env_file=None)
+    mocker.patch("microtx.broker.shioaji_gateway.ShioajiGateway")
+    engine = mocker.patch("microtx.cli.commands.TradingEngine")
+
+    from microtx.cli.commands import _run
+
+    assert _run(args, settings) == 0
+    warning = capsys.readouterr().err
+    assert "WARNING" in warning
+    assert "SL@46400" in warning
+    assert "持續裸露" in warning
+    engine.return_value.run_forever.assert_called_once_with()

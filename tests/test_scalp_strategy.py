@@ -12,6 +12,7 @@ from microtx.contracts import TMF
 from microtx.enums import Direction, OrderIntent, StrategyState
 from microtx.exceptions import StrategyError
 from microtx.market.tick import TickEvent
+from microtx.strategies.oco import OcoStrategy
 from microtx.strategies.scalp import ScalpStrategy
 
 _NOW = datetime(2026, 1, 5, 9, 0, tzinfo=ZoneInfo("Asia/Taipei"))
@@ -351,3 +352,305 @@ def test_describe_is_human_readable() -> None:
     assert "Scalp" in description
     assert TMF.symbol in description
     assert "state=IDLE" in description
+
+
+def _absolute_strategy(
+    *,
+    direction: Direction = Direction.LONG,
+    trigger: float = 46_500.0,
+    take_profit: float = 46_600.0,
+    stop_loss: float = 46_400.0,
+) -> ScalpStrategy:
+    return ScalpStrategy(
+        spec=TMF,
+        direction=direction,
+        trigger_price=trigger,
+        take_profit_price=take_profit,
+        stop_loss_price=stop_loss,
+    )
+
+
+def test_absolute_long_normal_take_profit_flow() -> None:
+    strategy = _absolute_strategy()
+    strategy.arm()
+    strategy.on_tick(_tick(46_500.0))
+    assert strategy.on_fill(_fill(Direction.LONG, 46_500.0)) == []
+    signal = strategy.on_tick(_tick(46_600.0))[0]
+    assert signal.intent is OrderIntent.TAKE_PROFIT
+
+
+def test_absolute_short_uses_directional_crossing() -> None:
+    strategy = _absolute_strategy(
+        direction=Direction.SHORT,
+        trigger=46_300.0,
+        take_profit=46_200.0,
+        stop_loss=46_400.0,
+    )
+    strategy.arm()
+    strategy.on_tick(_tick(46_300.0))
+    strategy.on_fill(_fill(Direction.SHORT, 46_300.0))
+    assert strategy.on_tick(_tick(46_200.0))[0].intent is OrderIntent.TAKE_PROFIT
+
+
+def test_absolute_stop_does_not_slide_after_gap_fill() -> None:
+    strategy = _absolute_strategy()
+    strategy.arm()
+    strategy.on_tick(_tick(46_500.0))
+    strategy.on_fill(_fill(Direction.LONG, 46_550.0))
+    # 核心價值：跳空成交只壓縮獲利空間，固定風險底線不可滑到 46,520。
+    assert strategy.stop_price == 46_400.0
+
+
+def test_gap_fill_beyond_absolute_take_profit_exits_immediately() -> None:
+    strategy = _absolute_strategy()
+    strategy.arm()
+    strategy.on_tick(_tick(46_500.0))
+    signals = strategy.on_fill(_fill(Direction.LONG, 46_650.0))
+    assert signals[0].intent is OrderIntent.TAKE_PROFIT
+
+
+def test_gap_fill_beyond_absolute_stop_exits_immediately() -> None:
+    strategy = _absolute_strategy()
+    strategy.arm()
+    strategy.on_tick(_tick(46_500.0))
+    signals = strategy.on_fill(_fill(Direction.LONG, 46_350.0))
+    assert signals[0].intent is OrderIntent.STOP_LOSS
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {
+            "take_profit_points": 50,
+            "stop_loss_points": 30,
+            "take_profit_price": 46_600.0,
+            "stop_loss_price": 46_400.0,
+        },
+        {
+            "take_profit_points": 50,
+            "take_profit_price": 46_600.0,
+            "stop_loss_price": 46_400.0,
+        },
+        {
+            "take_profit_points": 50,
+            "stop_loss_points": 30,
+            "take_profit_price": 46_600.0,
+        },
+        {},
+        {"take_profit_price": 46_600.0, "stop_loss_points": 30},
+        {"take_profit_price": 46_600.0, "stop_loss_price": 46_550.0},
+        {"take_profit_price": 46_600.5, "stop_loss_price": 46_400.0},
+        {"take_profit_price": 46_600.0, "stop_loss_price": 46_400.0, "trailing_points": 20},
+    ],
+)
+def test_absolute_mode_rejects_invalid_or_mixed_parameters(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        ScalpStrategy(
+            spec=TMF,
+            direction=Direction.LONG,
+            trigger_price=46_500.0,
+            **kwargs,
+        )
+
+
+def test_absolute_short_rejects_wrong_price_order() -> None:
+    with pytest.raises(ValueError, match="順序"):
+        _absolute_strategy(
+            direction=Direction.SHORT,
+            trigger=46_300.0,
+            take_profit=46_400.0,
+            stop_loss=46_200.0,
+        )
+
+
+def test_describe_distinguishes_point_and_absolute_modes() -> None:
+    assert "TP+" in _strategy().describe()
+    absolute = _absolute_strategy().describe()
+    assert "TP@46600" in absolute
+    assert "SL@46400" in absolute
+
+
+def test_oco_delegates_independent_absolute_prices_to_both_legs() -> None:
+    strategy = OcoStrategy(
+        spec=TMF,
+        upper_trigger=46_500.0,
+        lower_trigger=46_300.0,
+        long_take_profit_price=46_600.0,
+        long_stop_loss_price=46_000.0,
+        short_take_profit_price=46_200.0,
+        short_stop_loss_price=46_400.0,
+    )
+    assert strategy._long.stop_price == 46_000.0
+    assert strategy._short.stop_price == 46_400.0
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"long_take_profit_price": 46_600.0},
+        {
+            "take_profit_points": 50,
+            "stop_loss_points": 30,
+            "long_take_profit_price": 46_600.0,
+            "long_stop_loss_price": 46_400.0,
+            "short_take_profit_price": 46_200.0,
+            "short_stop_loss_price": 46_400.0,
+        },
+    ],
+)
+def test_oco_rejects_partial_or_mixed_absolute_mode(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        OcoStrategy(
+            spec=TMF,
+            upper_trigger=46_500.0,
+            lower_trigger=46_300.0,
+            **kwargs,
+        )
+
+
+def test_default_execution_styles_preserve_market_signals() -> None:
+    strategy = _absolute_strategy()
+    strategy.arm()
+    assert strategy.on_tick(_tick(46_500.0))[0].limit_price is None
+    strategy.on_fill(_fill(Direction.LONG, 46_500.0))
+    assert strategy.on_tick(_tick(46_600.0))[0].limit_price is None
+
+
+def test_absolute_exit_and_entry_styles_are_independent() -> None:
+    from microtx.enums import ExecutionStyle
+
+    strategy = ScalpStrategy(
+        spec=TMF,
+        direction=Direction.LONG,
+        trigger_price=46_500.0,
+        take_profit_price=46_600.0,
+        stop_loss_price=46_400.0,
+        entry_style=ExecutionStyle.LIMIT,
+        take_profit_style=ExecutionStyle.LIMIT,
+    )
+    strategy.arm()
+    assert strategy.on_tick(_tick(46_500.0))[0].limit_price == 46_500.0
+    strategy.on_fill(_fill(Direction.LONG, 46_500.0))
+    assert strategy.on_tick(_tick(46_600.0))[0].limit_price == 46_600.0
+
+
+def test_limit_stop_uses_absolute_stop_price() -> None:
+    from microtx.enums import ExecutionStyle
+
+    strategy = ScalpStrategy(
+        spec=TMF,
+        direction=Direction.LONG,
+        trigger_price=46_500.0,
+        take_profit_price=46_600.0,
+        stop_loss_price=46_400.0,
+        stop_loss_style=ExecutionStyle.LIMIT,
+    )
+    strategy.arm()
+    strategy.on_tick(_tick(46_500.0))
+    strategy.on_fill(_fill(Direction.LONG, 46_500.0))
+    assert strategy.on_tick(_tick(46_400.0))[0].limit_price == 46_400.0
+
+
+@pytest.mark.parametrize("style_name", ["take_profit_style", "stop_loss_style"])
+def test_point_mode_rejects_limit_exit(style_name: str) -> None:
+    from microtx.enums import ExecutionStyle
+
+    with pytest.raises(ValueError, match="限價需搭配絕對價格"):
+        ScalpStrategy(
+            spec=TMF,
+            direction=Direction.LONG,
+            trigger_price=23_000.0,
+            take_profit_points=50,
+            stop_loss_points=30,
+            **{style_name: ExecutionStyle.LIMIT},
+        )
+
+
+def test_point_mode_allows_limit_entry() -> None:
+    from microtx.enums import ExecutionStyle
+
+    strategy = ScalpStrategy(
+        spec=TMF,
+        direction=Direction.LONG,
+        trigger_price=23_000.0,
+        take_profit_points=50,
+        stop_loss_points=30,
+        entry_style=ExecutionStyle.LIMIT,
+    )
+    strategy.arm()
+    assert strategy.on_tick(_tick(23_000.0))[0].limit_price == 23_000.0
+
+
+@pytest.mark.parametrize(
+    ("fill_price", "intent"),
+    [(46_650.0, OrderIntent.TAKE_PROFIT), (46_350.0, OrderIntent.STOP_LOSS)],
+)
+def test_gap_beyond_limit_exit_degrades_to_market(
+    fill_price: float, intent: OrderIntent, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    from microtx.enums import ExecutionStyle
+
+    strategy = ScalpStrategy(
+        spec=TMF,
+        direction=Direction.LONG,
+        trigger_price=46_500.0,
+        take_profit_price=46_600.0,
+        stop_loss_price=46_400.0,
+        take_profit_style=ExecutionStyle.LIMIT,
+        stop_loss_style=ExecutionStyle.LIMIT,
+    )
+    strategy.arm()
+    strategy.on_tick(_tick(46_500.0))
+    with caplog.at_level(logging.INFO, logger="microtx.strategies.scalp"):
+        signal = strategy.on_fill(_fill(Direction.LONG, fill_price))[0]
+    assert signal.intent is intent
+    assert signal.limit_price is None
+    assert "降級為範圍市價" in caplog.text
+
+
+def test_force_close_is_always_market_even_when_all_styles_are_limit() -> None:
+    from microtx.enums import ExecutionStyle
+
+    strategy = ScalpStrategy(
+        spec=TMF,
+        direction=Direction.LONG,
+        trigger_price=46_500.0,
+        take_profit_price=46_600.0,
+        stop_loss_price=46_400.0,
+        entry_style=ExecutionStyle.LIMIT,
+        take_profit_style=ExecutionStyle.LIMIT,
+        stop_loss_style=ExecutionStyle.LIMIT,
+    )
+    strategy.arm()
+    strategy.on_tick(_tick(46_500.0))
+    strategy.on_fill(_fill(Direction.LONG, 46_500.0))
+    signal = strategy.force_close("收盤強平")[0]
+    assert signal.intent is OrderIntent.FORCE_CLOSE
+    assert signal.limit_price is None
+
+
+def test_execution_styles_are_visible_in_scalp_and_oco_descriptions() -> None:
+    from microtx.enums import ExecutionStyle
+
+    scalp = ScalpStrategy(
+        spec=TMF,
+        direction=Direction.LONG,
+        trigger_price=46_500.0,
+        take_profit_price=46_600.0,
+        stop_loss_price=46_400.0,
+        stop_loss_style=ExecutionStyle.LIMIT,
+    )
+    oco = OcoStrategy(
+        spec=TMF,
+        upper_trigger=46_500.0,
+        lower_trigger=46_300.0,
+        long_take_profit_price=46_600.0,
+        long_stop_loss_price=46_400.0,
+        short_take_profit_price=46_200.0,
+        short_stop_loss_price=46_400.0,
+        entry_style=ExecutionStyle.LIMIT,
+    )
+    assert "SL:LIMIT" in scalp.describe()
+    assert "ENTRY:LIMIT" in oco.describe()

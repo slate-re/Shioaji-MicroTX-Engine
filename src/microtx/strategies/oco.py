@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from microtx.broker.base import FillEvent, RejectEvent
 from microtx.contracts import FuturesSpec
-from microtx.enums import Direction, StrategyState
+from microtx.enums import Direction, ExecutionStyle, StrategyState
 from microtx.market.tick import TickEvent
 from microtx.strategies.base import Signal, Strategy
 from microtx.strategies.scalp import ScalpStrategy
@@ -19,14 +19,33 @@ class OcoStrategy(Strategy):
         spec: FuturesSpec,
         upper_trigger: float,
         lower_trigger: float,
-        take_profit_points: int,
-        stop_loss_points: int,
+        take_profit_points: int | None = None,
+        stop_loss_points: int | None = None,
+        long_take_profit_price: float | None = None,
+        long_stop_loss_price: float | None = None,
+        short_take_profit_price: float | None = None,
+        short_stop_loss_price: float | None = None,
         quantity: int = 1,
+        entry_style: ExecutionStyle = ExecutionStyle.MARKET,
+        take_profit_style: ExecutionStyle = ExecutionStyle.MARKET,
+        stop_loss_style: ExecutionStyle = ExecutionStyle.MARKET,
     ) -> None:
         """初始化上破做多與下破做空的兩個委派策略。"""
         super().__init__(spec=spec, quantity=quantity)
         if upper_trigger <= lower_trigger:
             raise ValueError("上方觸發價必須高於下方觸發價")
+        absolute_prices = (
+            long_take_profit_price,
+            long_stop_loss_price,
+            short_take_profit_price,
+            short_stop_loss_price,
+        )
+        absolute_count = sum(price is not None for price in absolute_prices)
+        points_given = take_profit_points is not None or stop_loss_points is not None
+        if absolute_count not in {0, 4}:
+            raise ValueError("OCO 四個絕對出場價位必須一起提供")
+        if absolute_count and points_given:
+            raise ValueError("OCO 點數模式與絕對價格模式不可混用")
         self._upper_trigger = upper_trigger
         self._lower_trigger = lower_trigger
         self._long = ScalpStrategy(
@@ -35,7 +54,12 @@ class OcoStrategy(Strategy):
             trigger_price=upper_trigger,
             take_profit_points=take_profit_points,
             stop_loss_points=stop_loss_points,
+            take_profit_price=long_take_profit_price,
+            stop_loss_price=long_stop_loss_price,
             quantity=quantity,
+            entry_style=entry_style,
+            take_profit_style=take_profit_style,
+            stop_loss_style=stop_loss_style,
         )
         self._short = ScalpStrategy(
             spec=spec,
@@ -43,7 +67,12 @@ class OcoStrategy(Strategy):
             trigger_price=lower_trigger,
             take_profit_points=take_profit_points,
             stop_loss_points=stop_loss_points,
+            take_profit_price=short_take_profit_price,
+            stop_loss_price=short_stop_loss_price,
             quantity=quantity,
+            entry_style=entry_style,
+            take_profit_style=take_profit_style,
+            stop_loss_style=stop_loss_style,
         )
         self._active: ScalpStrategy | None = None
 
@@ -124,7 +153,8 @@ class OcoStrategy(Strategy):
         """回傳雙向策略的一行摘要。"""
         return (
             f"OCO {self._spec.symbol} qty={self._quantity} upper={self._upper_trigger:g} "
-            f"lower={self._lower_trigger:g} state={self._state.value}"
+            f"lower={self._lower_trigger:g} legs=[{self._long.describe()} | "
+            f"{self._short.describe()}] state={self._state.value}"
         )
 
     def _sync_active_state(self, reason: str) -> None:
